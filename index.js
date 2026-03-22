@@ -4097,7 +4097,8 @@ Aquí tienes los *tours disponibles en Colombia*.`);
       }
 
       if (serviceLineKey === "tours_colombia") {
-        session.state = "await_tour_group";
+        session.pendingRealTourGroup = "tours_colombia";
+        session.state = "await_real_tour_choice";
         await sendWhatsAppText(from, categoriesEmojiText());
         await sendRealTourGroupsList(from, session);
         return res.sendStatus(200);
