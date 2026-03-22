@@ -469,66 +469,6 @@ function hasUserRespondedAfterMenu(session) {
 }
 
 
-function shortNavReminderText() {
-  return "💡 Puedes escribir *menú* o *atrás* en cualquier momento.";
-}
-
-function hasBothMenuAndBackReminder(text) {
-  const t = normalizeText(text || "");
-  return t.includes("menu") && t.includes("atras");
-}
-
-function appendNavReminder(text, { force = false } = {}) {
-  const raw = String(text || "").trim();
-  if (!raw) return shortNavReminderText();
-  if (!force && hasBothMenuAndBackReminder(raw)) return raw;
-  return `${raw}
-
-${shortNavReminderText()}`;
-}
-
-function matchesStandaloneCommand(textNorm, phrases = [], maxLen = 80) {
-  const t = normalizeText(textNorm || "")
-    .replace(/[!?.,;:()\[\]{}"'“”‘’`]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!t || t.length > maxLen) return false;
-  return phrases.some((phrase) => {
-    const p = normalizeText(phrase);
-    return t === p || t.startsWith(p + " ") || t.endsWith(" " + p) || t.includes(" " + p + " ");
-  });
-}
-
-function isMenuCommand(textNorm) {
-  return matchesStandaloneCommand(textNorm, [
-    "menu",
-    "menú",
-    "inicio",
-    "reiniciar",
-    "reset",
-    "resetear",
-    "empezar de nuevo",
-    "volver al menu",
-    "volver al menú",
-    "volver al inicio",
-    "ir al menu",
-    "ir al menú",
-    "ir al inicio",
-    "regresar al menu",
-    "regresar al menú",
-    "regresar al inicio",
-    "mostrar menu",
-    "mostrar menú",
-    "mostrar el menu",
-    "mostrar el menú",
-    "ver menu",
-    "ver menú",
-    "quiero el menu",
-    "quiero el menú"
-  ]);
-}
-
-
 // =====================================================
 // Stable stringify
 // =====================================================
@@ -2307,7 +2247,7 @@ function categoriesEmojiText() {
 ` +
     `Estos son los tours disponibles en esta versión del bot.
 ` +
-    `Selecciona el tour que deseas ver y te mostraré su ficha antes de pedir tus datos.`
+    `Te mostraré el listado completo y puedes responder con el *número* o con el *nombre* del tour que deseas ver.`
   );
 }
 
@@ -2385,23 +2325,8 @@ function getRealTourTextDetails(tour) {
 }
 
 function isGoBack(textNorm) {
-  return matchesStandaloneCommand(textNorm, [
-    "atras",
-    "atrás",
-    "volver",
-    "regresar",
-    "regresa",
-    "retroceder",
-    "ir atras",
-    "ir atrás",
-    "volver atras",
-    "volver atrás",
-    "regresar atras",
-    "regresar atrás",
-    "volver al listado",
-    "volver al menu",
-    "volver al menú"
-  ]);
+  const t = normalizeText(textNorm || "");
+  return ["atras", "atrás", "volver", "regresar", "regresa", "volver atras", "volver atrás"].includes(t);
 }
 
 function inferRealTourExperienceText(title = "") {
@@ -2514,18 +2439,17 @@ function buildRealTourLeadSummary(session, phoneDigits) {
 // WhatsApp send helpers
 // =========================
 async function sendWhatsAppText(to, text, reportSource = "BOT") {
-  const finalText = appendNavReminder(text);
   const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
   await axios.post(
     url,
-    { messaging_product: "whatsapp", to, type: "text", text: { body: finalText } },
+    { messaging_product: "whatsapp", to, type: "text", text: { body: text } },
     { headers: { Authorization: `Bearer ${WA_TOKEN}` } }
   );
 
   await bothubReportMessage({
     direction: "OUTBOUND",
     to: String(to),
-    body: String(finalText),
+    body: String(text),
     source: reportSource,
     kind: "TEXT",
   });
@@ -2544,7 +2468,7 @@ async function sendWhatsAppDocument(to, documentUrl, filename, caption = "", rep
       document: {
         link: documentUrl,
         filename: filename || undefined,
-        caption: (caption ? appendNavReminder(caption) : undefined),
+        caption: caption || undefined,
       },
     },
     { headers: { Authorization: `Bearer ${WA_TOKEN}` } }
@@ -2553,7 +2477,7 @@ async function sendWhatsAppDocument(to, documentUrl, filename, caption = "", rep
   await bothubReportMessage({
     direction: "OUTBOUND",
     to: String(to),
-    body: (caption ? appendNavReminder(caption) : (filename || "Documento enviado")),
+    body: caption || filename || "Documento enviado",
     source: reportSource,
     kind: "DOCUMENT",
     meta: { filename: filename || undefined, link: documentUrl },
@@ -2572,7 +2496,7 @@ async function sendWhatsAppImage(to, imageUrl, caption = "", reportSource = "BOT
       type: "image",
       image: {
         link: imageUrl,
-        caption: (caption ? appendNavReminder(caption) : undefined),
+        caption: caption || undefined,
       },
     },
     { headers: { Authorization: `Bearer ${WA_TOKEN}` } }
@@ -2581,7 +2505,7 @@ async function sendWhatsAppImage(to, imageUrl, caption = "", reportSource = "BOT
   await bothubReportMessage({
     direction: "OUTBOUND",
     to: String(to),
-    body: (caption ? appendNavReminder(caption) : "Imagen enviada"),
+    body: caption || "Imagen enviada",
     source: reportSource,
     kind: "IMAGE",
     meta: { link: imageUrl },
@@ -2627,8 +2551,8 @@ async function sendInteractiveList(to, { header, body, button, sectionTitle, row
       interactive: {
         type: "list",
         header: { type: "text", text: header },
-        body: { text: appendNavReminder(body) },
-        footer: { text: "Escribe menú o atrás" },
+        body: { text: body },
+        footer: { text: BUSINESS_NAME },
         action: { button, sections: [{ title: sectionTitle, rows }] },
       },
     },
@@ -2733,15 +2657,8 @@ async function sendPackageDestinationsList(to) {
 }
 
 
-async function sendRealTourGroupsList(to) {
-  const rows = REAL_TOURS.map((t) => ({ id: t.id, title: waRowTitle(t.title), description: "" }));
-  await sendInteractiveList(to, {
-    header: "Tours en Colombia",
-    body: "Selecciona el tour que deseas ver 👇",
-    button: "Ver tours",
-    sectionTitle: "Tours disponibles",
-    rows,
-  });
+async function sendRealTourGroupsList(to, session) {
+  await sendRealToursByGroup(to, "tours_colombia", session);
 }
 
 async function sendRealToursByGroup(to, groupKey, session) {
@@ -3749,7 +3666,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     if (
-      isMenuCommand(tNorm)
+      ["menu", "menú", "inicio", "reiniciar", "reset", "resetear", "empezar de nuevo"].includes(tNorm)
     ) {
       clearIntakeFlow(session);
       session.lastBooking = null;
@@ -3795,12 +3712,8 @@ app.post("/webhook", async (req, res) => {
       if (session.state === "await_real_tour_choice") {
         session.pendingRealTourKey = null;
         session.pendingDesiredDate = null;
-        session.pendingAdults = null;
-        session.pendingChildren = null;
-        session.pendingChildrenAges = null;
-        session.pendingName = null;
         await sendWhatsAppText(from, `↩️ Perfecto. Volviste al listado de *tours en Colombia*.`);
-        await sendRealToursByGroup(from, "tours_colombia", session);
+        await sendRealTourGroupsList(from, session);
         return res.sendStatus(200);
       }
 
@@ -3845,7 +3758,7 @@ app.post("/webhook", async (req, res) => {
       session.pendingRealTourGroup = "tours_colombia";
       session.state = "await_real_tour_choice";
       await sendWhatsAppText(from, categoriesEmojiText());
-      await sendRealToursByGroup(from, "tours_colombia", session);
+      await sendRealTourGroupsList(from, session);
       return res.sendStatus(200);
     }
 
@@ -4135,7 +4048,7 @@ Ej: 5, 8`);
       session.pendingRealTourGroup = "tours_colombia";
       session.state = "await_real_tour_choice";
       await sendWhatsAppText(from, categoriesEmojiText());
-      await sendRealTourGroupsList(from);
+      await sendRealTourGroupsList(from, session);
       return res.sendStatus(200);
     }
 
@@ -4148,7 +4061,7 @@ Ej: 5, 8`);
       session.state = "await_real_tour_choice";
       await sendWhatsAppText(from, `Perfecto 🌴
 Aquí tienes los *tours disponibles en Colombia*.`);
-      await sendRealTourGroupsList(from);
+      await sendRealTourGroupsList(from, session);
       return res.sendStatus(200);
     }
 
@@ -4186,7 +4099,7 @@ Aquí tienes los *tours disponibles en Colombia*.`);
       if (serviceLineKey === "tours_colombia") {
         session.state = "await_tour_group";
         await sendWhatsAppText(from, categoriesEmojiText());
-        await sendRealTourGroupsList(from);
+        await sendRealTourGroupsList(from, session);
         return res.sendStatus(200);
       }
 
