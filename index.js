@@ -186,10 +186,6 @@ function defaultMenuReminder() {
 function defaultLead() {
   return {
     tour_key: "",
-    product_key: "",
-    kind: "",
-    product_title: "",
-    pending_flow: "",
     followupSent: false,
     lastInteractionAt: "",
     quotePreview: "",
@@ -246,7 +242,6 @@ function defaultSession() {
     lastInboundMediaKind: "",
     lastInboundMediaSummary: "",
     lastInboundTranscript: "",
-    retryCounts: {},
 
     lead: defaultLead(),
 
@@ -283,18 +278,10 @@ function sanitizeSession(session) {
     session.lead = defaultLead();
   } else {
     if (typeof session.lead.tour_key !== "string") session.lead.tour_key = "";
-    if (typeof session.lead.product_key !== "string") session.lead.product_key = "";
-    if (typeof session.lead.kind !== "string") session.lead.kind = "";
-    if (typeof session.lead.product_title !== "string") session.lead.product_title = "";
-    if (typeof session.lead.pending_flow !== "string") session.lead.pending_flow = "";
     if (typeof session.lead.followupSent !== "boolean") session.lead.followupSent = false;
     if (typeof session.lead.lastInteractionAt !== "string") session.lead.lastInteractionAt = "";
     if (typeof session.lead.quotePreview !== "string") session.lead.quotePreview = "";
     if (typeof session.lead.converted !== "boolean") session.lead.converted = false;
-  }
-
-  if (!session.retryCounts || typeof session.retryCounts !== "object" || Array.isArray(session.retryCounts)) {
-    session.retryCounts = {};
   }
 
   if (!session.reschedule || typeof session.reschedule !== "object") {
@@ -455,7 +442,6 @@ function clearIntakeFlow(session) {
   session.pendingNights = null;
   session.pendingTransferRoute = null;
   session.pendingAdvisorTopic = null;
-  session.retryCounts = {};
 }
 
 function disableMenuInactivityReminder(session) {
@@ -482,102 +468,64 @@ function hasUserRespondedAfterMenu(session) {
   return lastUserAt > shownAt;
 }
 
-function bumpRetry(session, key) {
-  const current = Number(session?.retryCounts?.[key] || 0) || 0;
-  if (!session.retryCounts || typeof session.retryCounts !== "object") session.retryCounts = {};
-  session.retryCounts[key] = current + 1;
-  return session.retryCounts[key];
+
+function shortNavReminderText() {
+  return "💡 Puedes escribir *menú* o *atrás* en cualquier momento.";
 }
 
-function resetRetry(session, key) {
-  if (!session?.retryCounts || typeof session.retryCounts !== "object") return;
-  delete session.retryCounts[key];
+function hasBothMenuAndBackReminder(text) {
+  const t = normalizeText(text || "");
+  return t.includes("menu") && t.includes("atras");
 }
 
-function resetAllRetries(session) {
-  session.retryCounts = {};
-}
-
-function buildRetryHelpText(baseText, { example = "", fallback = "Escribe *menú* para volver al inicio o *asesor* para hablar con alguien." } = {}) {
-  const lines = [String(baseText || "").trim()];
-  if (example) lines.push(`Ejemplo: ${example}`);
-  lines.push(fallback);
-  return lines.filter(Boolean).join("\n");
-}
-
-function looksLikeQuestion(textNorm) {
-  const t = String(textNorm || "").trim();
-  return t.includes("?") || ["que ", "qué ", "como ", "cómo ", "cual ", "cuál ", "cuanto", "cuánto", "donde", "dónde", "hay", "sale", "incluye", "precio"].some((k) => t.startsWith(k));
-}
-
-function isProductFaqQuestion(textNorm) {
-  return looksLikeQuestion(textNorm) || wantsQuote(textNorm) || wantsIncludes(textNorm) || wantsSchedule(textNorm) || wantsPayments(textNorm) || wantsPolicies(textNorm);
-}
-
-function parseAdultsChildrenFromText(text) {
-  const raw = String(text || "");
-  const t = normalizeText(raw);
-  const adultsMatch = t.match(/(\d+)\s*(adultos?|personas adultas?|mayores?)/);
-  const childrenMatch = t.match(/(\d+)\s*(ninos?|niños?|menores?|bebes?|bebés?)/);
-  let adults = adultsMatch ? parseInt(adultsMatch[1], 10) : null;
-  let children = childrenMatch ? parseInt(childrenMatch[1], 10) : null;
-  let total = null;
-
-  const totalMatch = t.match(/(?:somos|vamos|seriamos|seríamos|para|viajamos)\s*(\d+)/) || t.match(/(\d+)\s*(personas|pasajeros?)/);
-  if (totalMatch) total = parseInt(totalMatch[1], 10);
-
-  if (adults === null && children === null && total !== null) {
-    adults = total;
-    children = 0;
-  }
-
-  if (adults === null && children !== null && total !== null) {
-    adults = Math.max(total - children, 0);
-  }
-
-  if (children === null && adults !== null && total !== null && total >= adults) {
-    children = Math.max(total - adults, 0);
-  }
-
-  if (adults === null && children === null) return { adults: null, children: null, total: null };
-  adults = Number.isFinite(adults) ? adults : 0;
-  children = Number.isFinite(children) ? children : 0;
-  total = Number.isFinite(total) ? total : adults + children;
-  return { adults, children, total };
-}
-
-function extractLeadDateText(text) {
+function appendNavReminder(text, { force = false } = {}) {
   const raw = String(text || "").trim();
-  const parsed = parseDateRangeFromText(raw);
-  if (parsed?.label) return parsed.label;
-  const lowered = normalizeText(raw);
-  const patterns = [
-    /(\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?)/,
-    /(\d{1,2}\s+de\s+[a-záéíóúñ]+(?:\s+de\s+\d{4})?)/,
-    /(hoy|manana|mañana|pasado manana|pasado mañana|este fin de semana|fin de semana|proximo lunes|próximo lunes|proximo martes|próximo martes|proximo miercoles|próximo miércoles|proximo jueves|próximo jueves|proximo viernes|próximo viernes|proximo sabado|próximo sábado|proximo domingo|próximo domingo|lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo)/
-  ];
-  for (const re of patterns) {
-    const m = lowered.match(re);
-    if (m) return m[1];
-  }
-  return "";
+  if (!raw) return shortNavReminderText();
+  if (!force && hasBothMenuAndBackReminder(raw)) return raw;
+  return `${raw}
+
+${shortNavReminderText()}`;
 }
 
-function extractNaturalTravelIntent(text) {
-  const raw = String(text || "").trim();
-  const tourKey = detectRealTourKeyFromUser(raw);
-  const packageKey = detectPackageDestinationKeyFromUser(raw);
-  const dateText = extractLeadDateText(raw);
-  const pax = parseAdultsChildrenFromText(raw);
-  return {
-    serviceLineKey: detectServiceLineFromUser(raw),
-    tourKey,
-    packageKey,
-    dateText,
-    adults: pax.adults,
-    children: pax.children,
-    total: pax.total,
-  };
+function matchesStandaloneCommand(textNorm, phrases = [], maxLen = 80) {
+  const t = normalizeText(textNorm || "")
+    .replace(/[!?.,;:()\[\]{}"'“”‘’`]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t || t.length > maxLen) return false;
+  return phrases.some((phrase) => {
+    const p = normalizeText(phrase);
+    return t === p || t.startsWith(p + " ") || t.endsWith(" " + p) || t.includes(" " + p + " ");
+  });
+}
+
+function isMenuCommand(textNorm) {
+  return matchesStandaloneCommand(textNorm, [
+    "menu",
+    "menú",
+    "inicio",
+    "reiniciar",
+    "reset",
+    "resetear",
+    "empezar de nuevo",
+    "volver al menu",
+    "volver al menú",
+    "volver al inicio",
+    "ir al menu",
+    "ir al menú",
+    "ir al inicio",
+    "regresar al menu",
+    "regresar al menú",
+    "regresar al inicio",
+    "mostrar menu",
+    "mostrar menú",
+    "mostrar el menu",
+    "mostrar el menú",
+    "ver menu",
+    "ver menú",
+    "quiero el menu",
+    "quiero el menú"
+  ]);
 }
 
 
@@ -1648,9 +1596,6 @@ function clearLeadOnBooking(session) {
   session.lead = {
     ...defaultLead(),
     tour_key: session.pendingTour || session.pendingRealTourKey || session.lead?.tour_key || "",
-    product_key: session.pendingTour || session.pendingRealTourKey || session.lead?.product_key || "",
-    kind: session.pendingRealTourKey || session.pendingTour ? "tour" : session.lead?.kind || "",
-    product_title: session.lead?.product_title || "",
     converted: true,
     followupSent: true,
     lastInteractionAt: new Date().toISOString(),
@@ -2036,7 +1981,7 @@ function getDigitsOnly(text) {
 
 async function finalizeSimpleLead({ session, flow, from, phoneDigits }) {
   const summaryText = buildLeadSummary(flow.summaryTitle, flow.buildSummaryFields(session, phoneDigits));
-  updateLead(session, { tour_key: "", product_key: session.pendingDestination || "", kind: "package", product_title: pkg?.title || "", pending_flow: "", quotePreview: summaryText, converted: false, followupSent: false });
+  updateLead(session, { tour_key: "", quotePreview: summaryText, converted: false, followupSent: false });
   await handoffToHumanTool({ summary: summaryText });
   await notifyPersonalWhatsAppLeadSummary(summaryText, phoneDigits);
   await sendWhatsAppText(from, flow.buildConfirmationText(session));
@@ -2440,8 +2385,23 @@ function getRealTourTextDetails(tour) {
 }
 
 function isGoBack(textNorm) {
-  const t = normalizeText(textNorm || "");
-  return ["atras", "atrás", "volver", "regresar", "regresa", "volver atras", "volver atrás"].includes(t);
+  return matchesStandaloneCommand(textNorm, [
+    "atras",
+    "atrás",
+    "volver",
+    "regresar",
+    "regresa",
+    "retroceder",
+    "ir atras",
+    "ir atrás",
+    "volver atras",
+    "volver atrás",
+    "regresar atras",
+    "regresar atrás",
+    "volver al listado",
+    "volver al menu",
+    "volver al menú"
+  ]);
 }
 
 function inferRealTourExperienceText(title = "") {
@@ -2533,48 +2493,6 @@ function buildRealTourInfoText(tour) {
   return lines.join("\n");
 }
 
-function buildRealTourFaqReply(tour, textNorm) {
-  if (!tour) return "";
-  const details = getRealTourTextDetails(tour) || {};
-  const parts = [`🌴 *${tour.title || "Tour"}*`];
-
-  if (wantsQuote(textNorm)) parts.push(`💵 ${details.priceText || "Precio sujeto a validación con la agencia."}`);
-  if (wantsIncludes(textNorm)) parts.push(`✅ ${details.includesText || inferRealTourExperienceText(tour.title || "")}`);
-  if (wantsSchedule(textNorm)) {
-    parts.push(`📅 ${details.dateText || "Fecha / salida según disponibilidad."}`);
-    if (details.pickupText) parts.push(`🚐 ${details.pickupText}`);
-    if (details.durationText) parts.push(`⏳ ${details.durationText}`);
-  }
-  if (wantsPayments(textNorm)) parts.push(`💳 ${details.paymentText || "Pago sujeto a validación final por parte de la agencia."}`);
-  if (wantsPolicies(textNorm)) parts.push(`📌 ${details.reserveText || "La solicitud queda registrada y un asesor confirma la reserva."}`);
-
-  if (parts.length === 1) {
-    parts.push(buildRealTourInfoText(tour));
-  } else {
-    parts.push("\nSi deseas, también puedo seguir con tu solicitud. Solo dime la *fecha* que te interesa.");
-  }
-
-  return parts.join("\n");
-}
-function buildPackageFaqReply(pkg, textNorm) {
-  if (!pkg) return "";
-  const parts = [`🎒 *${pkg.title || "Paquete vacacional"}*`];
-  if (wantsQuote(textNorm)) parts.push(`💵 ${pkg.priceText || "Precio sujeto a validación con la agencia."}`);
-  if (wantsIncludes(textNorm)) parts.push(`✅ ${pkg.includesText || "Incluye según la ficha publicada por la agencia."}`);
-  if (wantsSchedule(textNorm)) {
-    if (pkg.durationText) parts.push(`⏳ ${pkg.durationText}`);
-    if (pkg.dateText) parts.push(`📅 ${pkg.dateText}`);
-  }
-  if (wantsPolicies(textNorm) || wantsPayments(textNorm)) {
-    parts.push(`📝 ${pkg.noteText || "La agencia valida disponibilidad, tarifa final y condiciones antes de confirmar."}`);
-  }
-  if (parts.length === 1) {
-    parts.push(buildPackageInfoText(pkg));
-  } else {
-    parts.push("\nSi deseas, seguimos con tu solicitud. Dime tu *nombre* o la *fecha de interés* y continuamos.");
-  }
-  return parts.join("\n");
-}
 function buildRealTourLeadSummary(session, phoneDigits) {
   const tour = getRealTourByKey(session.pendingRealTourKey);
   const pax = Number(session.pendingAdults || 0) + Number(session.pendingChildren || 0);
@@ -2596,17 +2514,18 @@ function buildRealTourLeadSummary(session, phoneDigits) {
 // WhatsApp send helpers
 // =========================
 async function sendWhatsAppText(to, text, reportSource = "BOT") {
+  const finalText = appendNavReminder(text);
   const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
   await axios.post(
     url,
-    { messaging_product: "whatsapp", to, type: "text", text: { body: text } },
+    { messaging_product: "whatsapp", to, type: "text", text: { body: finalText } },
     { headers: { Authorization: `Bearer ${WA_TOKEN}` } }
   );
 
   await bothubReportMessage({
     direction: "OUTBOUND",
     to: String(to),
-    body: String(text),
+    body: String(finalText),
     source: reportSource,
     kind: "TEXT",
   });
@@ -2625,7 +2544,7 @@ async function sendWhatsAppDocument(to, documentUrl, filename, caption = "", rep
       document: {
         link: documentUrl,
         filename: filename || undefined,
-        caption: caption || undefined,
+        caption: (caption ? appendNavReminder(caption) : undefined),
       },
     },
     { headers: { Authorization: `Bearer ${WA_TOKEN}` } }
@@ -2634,7 +2553,7 @@ async function sendWhatsAppDocument(to, documentUrl, filename, caption = "", rep
   await bothubReportMessage({
     direction: "OUTBOUND",
     to: String(to),
-    body: caption || filename || "Documento enviado",
+    body: (caption ? appendNavReminder(caption) : (filename || "Documento enviado")),
     source: reportSource,
     kind: "DOCUMENT",
     meta: { filename: filename || undefined, link: documentUrl },
@@ -2653,7 +2572,7 @@ async function sendWhatsAppImage(to, imageUrl, caption = "", reportSource = "BOT
       type: "image",
       image: {
         link: imageUrl,
-        caption: caption || undefined,
+        caption: (caption ? appendNavReminder(caption) : undefined),
       },
     },
     { headers: { Authorization: `Bearer ${WA_TOKEN}` } }
@@ -2662,7 +2581,7 @@ async function sendWhatsAppImage(to, imageUrl, caption = "", reportSource = "BOT
   await bothubReportMessage({
     direction: "OUTBOUND",
     to: String(to),
-    body: caption || "Imagen enviada",
+    body: (caption ? appendNavReminder(caption) : "Imagen enviada"),
     source: reportSource,
     kind: "IMAGE",
     meta: { link: imageUrl },
@@ -2708,8 +2627,8 @@ async function sendInteractiveList(to, { header, body, button, sectionTitle, row
       interactive: {
         type: "list",
         header: { type: "text", text: header },
-        body: { text: body },
-        footer: { text: BUSINESS_NAME },
+        body: { text: appendNavReminder(body) },
+        footer: { text: "Escribe menú o atrás" },
         action: { button, sections: [{ title: sectionTitle, rows }] },
       },
     },
@@ -2768,7 +2687,7 @@ function buildPackageLeadSummary(session, phoneDigits) {
 async function finalizePackageLead({ session, from }) {
   const contactPhone = String(from || "").replace(/[^\d]/g, "");
   const summaryText = buildPackageLeadSummary(session, contactPhone);
-  updateLead(session, { tour_key: "", product_key: session.pendingDestination || "", kind: "package", product_title: pkg?.title || "", pending_flow: "", quotePreview: summaryText, converted: false, followupSent: false });
+  updateLead(session, { tour_key: "", quotePreview: summaryText, converted: false, followupSent: false });
   await handoffToHumanTool({ summary: summaryText });
   await notifyPersonalWhatsAppLeadSummary(summaryText, contactPhone);
   const pkg = getPackageDestinationByKey(session.pendingDestination);
@@ -3830,7 +3749,7 @@ app.post("/webhook", async (req, res) => {
     }
 
     if (
-      ["menu", "menú", "inicio", "reiniciar", "reset", "resetear", "empezar de nuevo"].includes(tNorm)
+      isMenuCommand(tNorm)
     ) {
       clearIntakeFlow(session);
       session.lastBooking = null;
@@ -3876,8 +3795,12 @@ app.post("/webhook", async (req, res) => {
       if (session.state === "await_real_tour_choice") {
         session.pendingRealTourKey = null;
         session.pendingDesiredDate = null;
+        session.pendingAdults = null;
+        session.pendingChildren = null;
+        session.pendingChildrenAges = null;
+        session.pendingName = null;
         await sendWhatsAppText(from, `↩️ Perfecto. Volviste al listado de *tours en Colombia*.`);
-        await sendRealTourGroupsList(from);
+        await sendRealToursByGroup(from, "tours_colombia", session);
         return res.sendStatus(200);
       }
 
@@ -3922,7 +3845,7 @@ app.post("/webhook", async (req, res) => {
       session.pendingRealTourGroup = "tours_colombia";
       session.state = "await_real_tour_choice";
       await sendWhatsAppText(from, categoriesEmojiText());
-      await sendRealTourGroupsList(from);
+      await sendRealToursByGroup(from, "tours_colombia", session);
       return res.sendStatus(200);
     }
 
@@ -3942,17 +3865,12 @@ app.post("/webhook", async (req, res) => {
       session.pendingRealTourGroup = pickedTour.groupKey;
       updateLead(session, {
         tour_key: pickedTour.key,
-        product_key: pickedTour.key,
-        kind: "tour",
-        product_title: pickedTour.title || "",
-        pending_flow: "await_real_tour_date",
         quotePreview: "",
         converted: false,
         followupSent: false,
       });
 
       session.state = "await_real_tour_date";
-      updateLead(session, { pending_flow: "await_real_tour_date" });
       await sendRealTourPresentation(from, pickedTour);
       await sendWhatsAppText(from, buildRealTourDatePrompt(pickedTour));
       return res.sendStatus(200);
@@ -3960,45 +3878,15 @@ app.post("/webhook", async (req, res) => {
 
     if (session.state === "await_real_tour_date") {
       const tour = getRealTourByKey(session.pendingRealTourKey);
-      if (isProductFaqQuestion(tNorm)) {
-        await sendWhatsAppText(from, buildRealTourFaqReply(tour, tNorm));
-        await sendWhatsAppText(from, buildRealTourDatePrompt(tour));
-        return res.sendStatus(200);
-      }
       const validation = validateRealTourRequestedDate(tour, userText);
 
       if (!validation.ok) {
-        const tries = bumpRetry(session, "real_tour_date");
-        const msg = tries >= 2
-          ? buildRetryHelpText(validation.message || `Por favor, indícame una *fecha válida* para el tour.`, { example: "mañana, domingo, 5 de abril o 12/04/2026" })
-          : (validation.message || `Por favor, indícame una *fecha válida* para el tour.`);
-        await sendWhatsAppText(from, msg);
+        await sendWhatsAppText(from, validation.message || `Por favor, indícame una *fecha válida* para el tour.`);
         return res.sendStatus(200);
       }
 
-      resetRetry(session, "real_tour_date");
-      const natural = extractNaturalTravelIntent(userText);
-      session.pendingDesiredDate = natural.dateText || userText;
-      if (Number.isFinite(natural.total) && natural.total > 0) {
-        session.pendingPassengers = natural.total;
-        session.pendingChildren = Number.isFinite(natural.children) ? natural.children : 0;
-        session.pendingAdults = Number.isFinite(natural.adults) ? natural.adults : Math.max(natural.total - Number(session.pendingChildren || 0), 0);
-        if (Number(session.pendingChildren || 0) > 0) {
-          session.state = "await_real_tour_children_ages";
-        updateLead(session, { pending_flow: "await_real_tour_children_ages" });
-          await sendWhatsAppText(from, `Perfecto 👍 Ya anoté *${session.pendingPassengers} pasajeros* (${session.pendingAdults} adultos / ${session.pendingChildren} niños).
-Ahora indícame las *edades de los niños separadas por coma*.
-Ej: 5, 8`);
-          return res.sendStatus(200);
-        }
-        session.state = "await_real_tour_name";
-      updateLead(session, { pending_flow: "await_real_tour_name" });
-        await sendWhatsAppText(from, `Perfecto 👍 Ya anoté *${session.pendingPassengers} pasajeros*.
-Ahora indícame tu *nombre completo*.`);
-        return res.sendStatus(200);
-      }
+      session.pendingDesiredDate = userText;
       session.state = "await_real_tour_adults";
-      updateLead(session, { pending_flow: "await_real_tour_adults" });
       await sendWhatsAppText(from, `Perfecto 👍
 ¿Cuántas *personas* viajarían en total?`);
       return res.sendStatus(200);
@@ -4007,15 +3895,12 @@ Ahora indícame tu *nombre completo*.`);
     if (session.state === "await_real_tour_adults") {
       const count = parsePassengerCount(userText);
       if (count === null || count < 1) {
-        const tries = bumpRetry(session, "real_tour_people");
-        await sendWhatsAppText(from, tries >= 2 ? buildRetryHelpText(`Por favor, indícame cuántas *personas* viajarían en total.`, { example: "2" }) : `Por favor, indícame cuántas *personas* viajarían en total. Ej: 2`);
+        await sendWhatsAppText(from, `Por favor, indícame cuántas *personas* viajarían en total. Ej: 2`);
         return res.sendStatus(200);
       }
-      resetRetry(session, "real_tour_people");
       session.pendingPassengers = count;
       session.pendingAdults = count;
       session.state = "await_real_tour_children";
-      updateLead(session, { pending_flow: "await_real_tour_children" });
       await sendWhatsAppText(from, `Gracias. Ahora dime cuántos *niños* viajarían. Si no van niños, responde *0*.`);
       return res.sendStatus(200);
     }
@@ -4023,23 +3908,19 @@ Ahora indícame tu *nombre completo*.`);
     if (session.state === "await_real_tour_children") {
       const count = parsePassengerCount(userText);
       if (count === null || count < 0) {
-        const tries = bumpRetry(session, "real_tour_children");
-        await sendWhatsAppText(from, tries >= 2 ? buildRetryHelpText(`Indícame cuántos *niños* viajarían.`, { example: "0 o 1" }) : `Indícame cuántos *niños* viajarían. Si no van niños, responde *0*.`);
+        await sendWhatsAppText(from, `Indícame cuántos *niños* viajarían. Si no van niños, responde *0*.`);
         return res.sendStatus(200);
       }
       const totalPax = Number(session.pendingPassengers || session.pendingAdults || 0);
       if (count > totalPax) {
-        const tries = bumpRetry(session, "real_tour_children");
-        await sendWhatsAppText(from, tries >= 2 ? buildRetryHelpText(`La cantidad de *niños* no puede ser mayor que el total de pasajeros.`, { example: `Total pasajeros: ${totalPax}. Responde 0, 1, 2...` }) : `La cantidad de *niños* no puede ser mayor que el total de pasajeros. Inténtalo de nuevo 🙏`);
+        await sendWhatsAppText(from, `La cantidad de *niños* no puede ser mayor que el total de pasajeros. Inténtalo de nuevo 🙏`);
         return res.sendStatus(200);
       }
-      resetRetry(session, "real_tour_children");
       session.pendingChildren = count;
       session.pendingAdults = Math.max(totalPax - count, 0);
 
       if (count > 0) {
         session.state = "await_real_tour_children_ages";
-        updateLead(session, { pending_flow: "await_real_tour_children_ages" });
         await sendWhatsAppText(
           from,
           count > 1
@@ -4051,7 +3932,6 @@ Ej: 5, 8`
       }
 
       session.state = "await_real_tour_name";
-      updateLead(session, { pending_flow: "await_real_tour_name" });
       await sendWhatsAppText(from, `Perfecto ✅
 Ahora indícame tu *nombre completo*.`);
       return res.sendStatus(200);
@@ -4060,16 +3940,13 @@ Ahora indícame tu *nombre completo*.`);
     if (session.state === "await_real_tour_children_ages") {
       const ages = normalizeChildrenAgesInput(userText, session.pendingChildren || 0);
       if (!ages.ok) {
-        const tries = bumpRetry(session, "real_tour_children_ages");
-        await sendWhatsAppText(from, tries >= 2 ? buildRetryHelpText(`Por favor, envíame las *edades de los niños separadas por coma*.`, { example: "5, 8" }) : `Por favor, envíame las *edades de los niños separadas por coma*.
+        await sendWhatsAppText(from, `Por favor, envíame las *edades de los niños separadas por coma*.
 Ej: 5, 8`);
         return res.sendStatus(200);
       }
 
-      resetRetry(session, "real_tour_children_ages");
       session.pendingChildrenAges = ages.formatted;
       session.state = "await_real_tour_name";
-      updateLead(session, { pending_flow: "await_real_tour_name" });
       await sendWhatsAppText(from, `Perfecto ✅
 Ahora indícame tu *nombre completo*.`);
       return res.sendStatus(200);
@@ -4084,7 +3961,6 @@ Ahora indícame tu *nombre completo*.`);
       session.pendingPickup = userText;
       session.pendingCity = groupContext.defaultCity || session.pendingCity || null;
       session.state = "await_real_tour_name";
-      updateLead(session, { pending_flow: "await_real_tour_name" });
       await sendWhatsAppText(from, `Perfecto ✅
 Ahora indícame tu *nombre completo*.`);
       return res.sendStatus(200);
@@ -4094,25 +3970,16 @@ Ahora indícame tu *nombre completo*.`);
       const groupContext = getRealTourGroupContext(session.pendingRealTourGroup || getRealTourByKey(session.pendingRealTourKey)?.groupKey || "");
       session.pendingCity = groupContext.defaultCity || userText;
       session.state = "await_real_tour_name";
-      updateLead(session, { pending_flow: "await_real_tour_name" });
       await sendWhatsAppText(from, `Perfecto ✅
 Ahora indícame tu *nombre completo*.`);
       return res.sendStatus(200);
     }
 
     if (session.state === "await_real_tour_name") {
-      if (isProductFaqQuestion(tNorm)) {
-        const tour = getRealTourByKey(session.pendingRealTourKey);
-        await sendWhatsAppText(from, buildRealTourFaqReply(tour, tNorm));
-        await sendWhatsAppText(from, `Cuando quieras, envíame tu *nombre completo* para continuar 🙂`);
-        return res.sendStatus(200);
-      }
       if (tNorm.length < 3 || ["si", "sí", "ok", "listo"].includes(tNorm)) {
-        const tries = bumpRetry(session, "real_tour_name");
-        await sendWhatsAppText(from, tries >= 2 ? buildRetryHelpText(`Por favor, envíame tu *nombre completo* 🙂`, { example: "María Pérez" }) : `Por favor, envíame tu *nombre completo* 🙂`);
+        await sendWhatsAppText(from, `Por favor, envíame tu *nombre completo* 🙂`);
         return res.sendStatus(200);
       }
-      resetRetry(session, "real_tour_name");
       session.pendingName = userText;
       const contactPhone = String(from || "").replace(/[^\d]/g, "");
       const tour = getRealTourByKey(session.pendingRealTourKey);
@@ -4126,9 +3993,6 @@ Ahora indícame tu *nombre completo*.`);
       session.lead = {
         ...defaultLead(),
         tour_key: session.pendingRealTourKey || "",
-        product_key: session.pendingRealTourKey || "",
-        kind: "tour",
-        product_title: tour?.title || "",
         followupSent: true,
         converted: true,
         quotePreview: summaryText,
@@ -4171,8 +4035,6 @@ Ahora indícame tu *nombre completo*.`);
       disableMenuInactivityReminder(session);
       session.pendingDestination = packageKey;
       session.state = "await_package_name";
-      updateLead(session, { pending_flow: "await_package_name" });
-      updateLead(session, { product_key: packageKey, kind: "package", product_title: getPackageDestinationByKey(packageKey)?.title || "", pending_flow: "await_package_name", converted: false, followupSent: false });
       await sendPackagePresentation(from, getPackageDestinationByKey(packageKey));
       await sendWhatsAppText(from, `Perfecto 🎒
 Ahora indícame tu *nombre completo*.`);
@@ -4180,57 +4042,23 @@ Ahora indícame tu *nombre completo*.`);
     }
 
     if (session.state === "await_package_name") {
-      if (isProductFaqQuestion(tNorm)) {
-        const tour = getRealTourByKey(session.pendingRealTourKey);
-        await sendWhatsAppText(from, buildRealTourFaqReply(tour, tNorm));
-        await sendWhatsAppText(from, `Cuando quieras, envíame tu *nombre completo* para continuar 🙂`);
-        return res.sendStatus(200);
-      }
       if (tNorm.length < 3 || ["si", "sí", "ok", "listo"].includes(tNorm)) {
-        const tries = bumpRetry(session, "real_tour_name");
-        await sendWhatsAppText(from, tries >= 2 ? buildRetryHelpText(`Por favor, envíame tu *nombre completo* 🙂`, { example: "María Pérez" }) : `Por favor, envíame tu *nombre completo* 🙂`);
+        await sendWhatsAppText(from, `Por favor, envíame tu *nombre completo* 🙂`);
         return res.sendStatus(200);
       }
-      resetRetry(session, "real_tour_name");
       session.pendingName = userText;
       session.state = "await_package_date";
-      updateLead(session, { pending_flow: "await_package_date" });
       await sendWhatsAppText(from, `Gracias. Ahora dime la *fecha de interés* para el paquete.`);
       return res.sendStatus(200);
     }
 
     if (session.state === "await_package_date") {
-      const pkg = getPackageDestinationByKey(session.pendingDestination);
-      if (isProductFaqQuestion(tNorm)) {
-        await sendWhatsAppText(from, buildPackageFaqReply(pkg, tNorm));
-        await sendWhatsAppText(from, `Ahora sí, indícame la *fecha de interés* para el paquete.`);
-        return res.sendStatus(200);
-      }
       if (tNorm.length < 2) {
-        const tries = bumpRetry(session, "package_date");
-        await sendWhatsAppText(from, tries >= 2 ? buildRetryHelpText(`Por favor, indícame la *fecha de interés* para el paquete.`, { example: "5 de abril o del 10 al 14 de julio" }) : `Por favor, indícame la *fecha de interés* para el paquete.`);
+        await sendWhatsAppText(from, `Por favor, indícame la *fecha de interés* para el paquete.`);
         return res.sendStatus(200);
       }
-      resetRetry(session, "package_date");
-      const natural = extractNaturalTravelIntent(userText);
-      session.pendingTravelDateText = natural.dateText || userText;
-      if (Number.isFinite(natural.total) && natural.total > 0) {
-        session.pendingPassengers = natural.total;
-        session.pendingChildren = Number.isFinite(natural.children) ? natural.children : 0;
-        session.pendingAdults = Number.isFinite(natural.adults) ? natural.adults : Math.max(natural.total - Number(session.pendingChildren || 0), 0);
-        if (Number(session.pendingChildren || 0) > 0) {
-          session.state = "await_package_children_ages";
-        updateLead(session, { pending_flow: "await_package_children_ages" });
-          await sendWhatsAppText(from, `Perfecto 👍 Ya anoté *${session.pendingPassengers} pasajeros* (${session.pendingAdults} adultos / ${session.pendingChildren} niños).
-Ahora indícame las *edades de los niños separadas por coma*.
-Ej: 5, 8`);
-          return res.sendStatus(200);
-        }
-        await finalizePackageLead({ session, from });
-        return res.sendStatus(200);
-      }
+      session.pendingTravelDateText = userText;
       session.state = "await_package_people";
-      updateLead(session, { pending_flow: "await_package_people" });
       await sendWhatsAppText(from, `Perfecto 👍
 ¿Cuántas *personas* viajarían en total?`);
       return res.sendStatus(200);
@@ -4239,14 +4067,11 @@ Ej: 5, 8`);
     if (session.state === "await_package_people") {
       const count = parsePassengerCount(userText);
       if (count === null || count < 1) {
-        const tries = bumpRetry(session, "package_people");
-        await sendWhatsAppText(from, tries >= 2 ? buildRetryHelpText(`Por favor, indícame cuántas *personas* viajarían en total.`, { example: "2" }) : `Por favor, indícame cuántas *personas* viajarían en total. Ej: 2`);
+        await sendWhatsAppText(from, `Por favor, indícame cuántas *personas* viajarían en total. Ej: 2`);
         return res.sendStatus(200);
       }
-      resetRetry(session, "package_people");
       session.pendingPassengers = count;
       session.state = "await_package_children";
-      updateLead(session, { pending_flow: "await_package_children" });
       await sendWhatsAppText(from, `Gracias. Ahora dime cuántos *niños* viajarían. Si no van niños, responde *0*.`);
       return res.sendStatus(200);
     }
@@ -4255,21 +4080,17 @@ Ej: 5, 8`);
       const count = parsePassengerCount(userText);
       const totalPax = Number(session.pendingPassengers || 0);
       if (count === null || count < 0) {
-        const tries = bumpRetry(session, "package_children");
-        await sendWhatsAppText(from, tries >= 2 ? buildRetryHelpText(`Indícame cuántos *niños* viajarían.`, { example: "0 o 1" }) : `Indícame cuántos *niños* viajarían. Si no van niños, responde *0*.`);
+        await sendWhatsAppText(from, `Indícame cuántos *niños* viajarían. Si no van niños, responde *0*.`);
         return res.sendStatus(200);
       }
       if (count > totalPax) {
-        const tries = bumpRetry(session, "package_children");
-        await sendWhatsAppText(from, tries >= 2 ? buildRetryHelpText(`La cantidad de *niños* no puede ser mayor que el total de pasajeros.`, { example: `Total pasajeros: ${totalPax}. Responde 0, 1, 2...` }) : `La cantidad de *niños* no puede ser mayor que el total de pasajeros. Inténtalo de nuevo 🙏`);
+        await sendWhatsAppText(from, `La cantidad de *niños* no puede ser mayor que el total de pasajeros. Inténtalo de nuevo 🙏`);
         return res.sendStatus(200);
       }
-      resetRetry(session, "package_children");
       session.pendingChildren = count;
       session.pendingAdults = Math.max(totalPax - count, 0);
       if (count > 0) {
         session.state = "await_package_children_ages";
-        updateLead(session, { pending_flow: "await_package_children_ages" });
         await sendWhatsAppText(from, count > 1 ? `Perfecto. Ahora indícame las *edades de los niños separadas por coma*.
 Ej: 5, 8` : `Perfecto. Ahora indícame la *edad del niño*.`);
         return res.sendStatus(200);
@@ -4282,12 +4103,10 @@ Ej: 5, 8` : `Perfecto. Ahora indícame la *edad del niño*.`);
     if (session.state === "await_package_children_ages") {
       const ages = normalizeChildrenAgesInput(userText, session.pendingChildren || 0);
       if (!ages.ok) {
-        const tries = bumpRetry(session, "package_children_ages");
-        await sendWhatsAppText(from, tries >= 2 ? buildRetryHelpText(`Por favor, envíame las *edades de los niños separadas por coma*.`, { example: "5, 8" }) : `Por favor, envíame las *edades de los niños separadas por coma*.
+        await sendWhatsAppText(from, `Por favor, envíame las *edades de los niños separadas por coma*.
 Ej: 5, 8`);
         return res.sendStatus(200);
       }
-      resetRetry(session, "package_children_ages");
       session.pendingChildrenAges = ages.formatted;
       await finalizePackageLead({ session, from });
       return res.sendStatus(200);
@@ -4342,69 +4161,9 @@ Aquí tienes los *tours disponibles en Colombia*.`);
       session.pendingRealTourGroup = tour?.groupKey || null;
       session.pendingRealTourKey = directRealTourKey;
       session.state = "await_real_tour_date";
-      updateLead(session, { pending_flow: "await_real_tour_date" });
-      updateLead(session, { tour_key: directRealTourKey, product_key: directRealTourKey, kind: "tour", product_title: tour?.title || "", pending_flow: "await_real_tour_date", quotePreview: "", converted: false, followupSent: false });
+      updateLead(session, { tour_key: directRealTourKey, quotePreview: "", converted: false, followupSent: false });
       await sendRealTourPresentation(from, tour);
-      const natural = extractNaturalTravelIntent(userText);
-      if (natural.dateText) {
-        session.pendingDesiredDate = natural.dateText;
-        if (Number.isFinite(natural.total) && natural.total > 0) {
-          session.pendingPassengers = natural.total;
-          session.pendingChildren = Number.isFinite(natural.children) ? natural.children : 0;
-          session.pendingAdults = Number.isFinite(natural.adults) ? natural.adults : Math.max(natural.total - Number(session.pendingChildren || 0), 0);
-          if (Number(session.pendingChildren || 0) > 0) {
-            session.state = "await_real_tour_children_ages";
-        updateLead(session, { pending_flow: "await_real_tour_children_ages" });
-            await sendWhatsAppText(from, `Perfecto 👍 Ya entendí que te interesa *${tour?.title || "este tour"}* para *${session.pendingDesiredDate}* y serían *${session.pendingPassengers} pasajeros* (${session.pendingAdults} adultos / ${session.pendingChildren} niños).
-Ahora indícame las *edades de los niños separadas por coma*.
-Ej: 5, 8`);
-            return res.sendStatus(200);
-          }
-          session.state = "await_real_tour_name";
-      updateLead(session, { pending_flow: "await_real_tour_name" });
-          await sendWhatsAppText(from, `Perfecto 👍 Ya entendí que te interesa *${tour?.title || "este tour"}* para *${session.pendingDesiredDate}* y serían *${session.pendingPassengers} pasajeros*.
-Ahora indícame tu *nombre completo*.`);
-          return res.sendStatus(200);
-        }
-        await sendWhatsAppText(from, `Perfecto 👍 Ya entendí que te interesa *${tour?.title || "este tour"}* para *${session.pendingDesiredDate}*.
-Ahora dime cuántas *personas* viajarían en total.`);
-        return res.sendStatus(200);
-      }
       await sendWhatsAppText(from, `📅 Si deseas reservar *${tour?.title || "este tour"}*, dime la *fecha* que te interesa y seguimos con tu solicitud.`);
-      return res.sendStatus(200);
-    }
-
-    const naturalIntent = extractNaturalTravelIntent(userText);
-    if (!directRealTourKey && naturalIntent.packageKey && naturalIntent.serviceLineKey === "paquetes_vacacionales") {
-      const pkg = getPackageDestinationByKey(naturalIntent.packageKey);
-      clearIntakeFlow(session);
-      disableMenuInactivityReminder(session);
-      session.pendingServiceLine = "paquetes_vacacionales";
-      session.pendingDestination = naturalIntent.packageKey;
-      updateLead(session, { product_key: naturalIntent.packageKey, kind: "package", product_title: pkg?.title || "", pending_flow: "await_package_name", converted: false, followupSent: false });
-      await sendPackagePresentation(from, pkg);
-      if (naturalIntent.dateText && Number.isFinite(naturalIntent.total) && naturalIntent.total > 0) {
-        session.pendingTravelDateText = naturalIntent.dateText;
-        session.pendingPassengers = naturalIntent.total;
-        session.pendingChildren = Number.isFinite(naturalIntent.children) ? naturalIntent.children : 0;
-        session.pendingAdults = Number.isFinite(naturalIntent.adults) ? naturalIntent.adults : Math.max(naturalIntent.total - Number(session.pendingChildren || 0), 0);
-        if (Number(session.pendingChildren || 0) > 0) {
-          session.state = "await_package_children_ages";
-        updateLead(session, { pending_flow: "await_package_children_ages" });
-          await sendWhatsAppText(from, `Perfecto 👍 Ya entendí que te interesa *${pkg?.title || "este paquete"}* para *${session.pendingTravelDateText}* y serían *${session.pendingPassengers} pasajeros* (${session.pendingAdults} adultos / ${session.pendingChildren} niños).
-Ahora indícame las *edades de los niños separadas por coma*.
-Ej: 5, 8`);
-          return res.sendStatus(200);
-        }
-        session.state = "await_package_name";
-      updateLead(session, { pending_flow: "await_package_name" });
-        await sendWhatsAppText(from, `Perfecto 👍 Ya entendí que te interesa *${pkg?.title || "este paquete"}* para *${session.pendingTravelDateText}* y serían *${session.pendingPassengers} pasajeros*.
-Ahora indícame tu *nombre completo*.`);
-        return res.sendStatus(200);
-      }
-      session.state = "await_package_name";
-      updateLead(session, { pending_flow: "await_package_name" });
-      await sendWhatsAppText(from, `Perfecto 🎒 Ya tengo el paquete. Ahora indícame tu *nombre completo* para seguir con la solicitud.`);
       return res.sendStatus(200);
     }
 
