@@ -43,7 +43,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 const GOOGLE_CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID;
 const BUSINESS_NAME =
-  process.env.BUSINESS_NAME || process.env.AGENCY_NAME || process.env.CLINIC_NAME || "Cavenasam Travel & Tour Group SRL";
+  process.env.BUSINESS_NAME || process.env.AGENCY_NAME || process.env.CLINIC_NAME || "Cavenasam Travel & Tour Group";
 const BUSINESS_ADDRESS =
   process.env.BUSINESS_ADDRESS || process.env.CLINIC_ADDRESS || "Medellín, Colombia";
 const BUSINESS_TIMEZONE =
