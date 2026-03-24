@@ -2494,7 +2494,6 @@ async function sendWhatsAppDocument(to, documentUrl, filename, caption = "", rep
     body: caption || filename || "Documento enviado",
     source: reportSource,
     kind: "DOCUMENT",
-    mediaUrl: documentUrl,
     meta: { filename: filename || undefined, link: documentUrl },
   });
 }
@@ -2523,65 +2522,7 @@ async function sendWhatsAppImage(to, imageUrl, caption = "", reportSource = "BOT
     body: caption || "Imagen enviada",
     source: reportSource,
     kind: "IMAGE",
-    mediaUrl: imageUrl,
     meta: { link: imageUrl },
-  });
-}
-
-async function sendWhatsAppVideo(to, videoUrl, caption = "", reportSource = "BOT") {
-  if (!videoUrl) throw new Error("videoUrl is required");
-
-  const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
-  await axios.post(
-    url,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "video",
-      video: {
-        link: videoUrl,
-        caption: caption || undefined,
-      },
-    },
-    { headers: { Authorization: `Bearer ${WA_TOKEN}` } }
-  );
-
-  await bothubReportMessage({
-    direction: "OUTBOUND",
-    to: String(to),
-    body: caption || "Video enviado",
-    source: reportSource,
-    kind: "VIDEO",
-    mediaUrl: videoUrl,
-    meta: { link: videoUrl },
-  });
-}
-
-async function sendWhatsAppAudio(to, audioUrl, reportSource = "BOT") {
-  if (!audioUrl) throw new Error("audioUrl is required");
-
-  const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
-  await axios.post(
-    url,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "audio",
-      audio: {
-        link: audioUrl,
-      },
-    },
-    { headers: { Authorization: `Bearer ${WA_TOKEN}` } }
-  );
-
-  await bothubReportMessage({
-    direction: "OUTBOUND",
-    to: String(to),
-    body: "Audio enviado",
-    source: reportSource,
-    kind: "AUDIO",
-    mediaUrl: audioUrl,
-    meta: { link: audioUrl },
   });
 }
 
@@ -3519,64 +3460,12 @@ app.post("/agent_message", async (req, res) => {
       return res.status(401).json({ error: "Invalid signature" });
     }
 
-    const body = req.body || {};
-    const waTo = String(body.waTo || "").trim();
-    const text = String(body.text || body.body || "").trim();
-    const explicitType = String(body.type || "").trim().toLowerCase();
-    const imageUrl = String(body.imageUrl || body.image_url || body.mediaUrl || body.media_url || "").trim();
-    const videoUrl = String(body.videoUrl || body.video_url || "").trim();
-    const audioUrl = String(body.audioUrl || body.audio_url || body.voiceUrl || body.voice_url || "").trim();
-    const documentUrl = String(body.documentUrl || body.document_url || body.fileUrl || body.file_url || "").trim();
-    const caption = String(body.caption || body.mediaCaption || "").trim();
-    const filename = String(body.filename || body.fileName || "").trim();
+    const { waTo, text } = req.body || {};
+    if (!waTo || !String(waTo).trim()) return res.status(400).json({ error: "waTo is required" });
+    if (!text || !String(text).trim()) return res.status(400).json({ error: "text is required" });
 
-    if (!waTo) return res.status(400).json({ error: "waTo is required" });
-
-    const inferredType = explicitType || (
-      imageUrl ? "image" :
-      videoUrl ? "video" :
-      audioUrl ? "audio" :
-      documentUrl ? "document" :
-      text ? "text" : ""
-    );
-
-    if (!inferredType) {
-      return res.status(400).json({
-        error: "One of text, imageUrl/mediaUrl, videoUrl, audioUrl or documentUrl is required",
-      });
-    }
-
-    if (inferredType === "text") {
-      if (!text) return res.status(400).json({ error: "text is required" });
-      await sendWhatsAppText(waTo, text, "AGENT");
-      return res.json({ ok: true, sentType: "text" });
-    }
-
-    if (inferredType === "image") {
-      if (!imageUrl) return res.status(400).json({ error: "imageUrl/mediaUrl is required" });
-      await sendWhatsAppImage(waTo, imageUrl, caption || text, "AGENT");
-      return res.json({ ok: true, sentType: "image" });
-    }
-
-    if (inferredType === "video") {
-      if (!videoUrl) return res.status(400).json({ error: "videoUrl is required" });
-      await sendWhatsAppVideo(waTo, videoUrl, caption || text, "AGENT");
-      return res.json({ ok: true, sentType: "video" });
-    }
-
-    if (inferredType === "audio") {
-      if (!audioUrl) return res.status(400).json({ error: "audioUrl/voiceUrl is required" });
-      await sendWhatsAppAudio(waTo, audioUrl, "AGENT");
-      return res.json({ ok: true, sentType: "audio" });
-    }
-
-    if (inferredType === "document") {
-      if (!documentUrl) return res.status(400).json({ error: "documentUrl/fileUrl is required" });
-      await sendWhatsAppDocument(waTo, documentUrl, filename || undefined, caption || text, "AGENT");
-      return res.json({ ok: true, sentType: "document" });
-    }
-
-    return res.status(400).json({ error: "Unsupported type" });
+    await sendWhatsAppText(String(waTo), String(text), "AGENT");
+    return res.json({ ok: true });
   } catch (e) {
     console.error("agent_message error:", e?.response?.data || e?.message || e);
     return res.status(500).json({ error: "Internal error" });
