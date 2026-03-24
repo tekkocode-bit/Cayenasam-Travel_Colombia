@@ -43,7 +43,7 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 const GOOGLE_CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID;
 const BUSINESS_NAME =
-  process.env.BUSINESS_NAME || process.env.AGENCY_NAME || process.env.CLINIC_NAME || "Cavenasam Travel & Tour Group SRL";
+  process.env.BUSINESS_NAME || process.env.AGENCY_NAME || process.env.CLINIC_NAME || "Cavenasam Travel & Tour Group";
 const BUSINESS_ADDRESS =
   process.env.BUSINESS_ADDRESS || process.env.CLINIC_ADDRESS || "Medellín, Colombia";
 const BUSINESS_TIMEZONE =
@@ -92,26 +92,18 @@ const BOTHUB_WEBHOOK_URL = (process.env.BOTHUB_WEBHOOK_URL || "").trim();
 const BOTHUB_WEBHOOK_SECRET = (process.env.BOTHUB_WEBHOOK_SECRET || "").trim();
 const BOTHUB_TIMEOUT_MS = Number(process.env.BOTHUB_TIMEOUT_MS || 6000);
 
+const BOTHUB_API_BASE_URL = (process.env.BOTHUB_API_BASE_URL || process.env.CRM_API_BASE_URL || "").trim();
+const BOTHUB_JWT_TOKEN = (process.env.BOTHUB_JWT_TOKEN || process.env.CRM_JWT_TOKEN || "").trim();
+const BOTHUB_BOT_ID = (process.env.BOTHUB_BOT_ID || "").trim();
+const HUB_QUEUE_SERVICE_TOURS = (process.env.HUB_QUEUE_SERVICE_TOURS || "Servicio al cliente / Tours").trim();
+const HUB_QUEUE_COMMERCIAL = (process.env.HUB_QUEUE_COMMERCIAL || "Asesoría comercial").trim();
+
 const BOT_PUBLIC_BASE_URL = (process.env.BOT_PUBLIC_BASE_URL || "").replace(/\/$/, "");
 const HUB_MEDIA_SECRET =
   (process.env.HUB_MEDIA_SECRET || BOTHUB_WEBHOOK_SECRET || VERIFY_TOKEN || "").trim();
 const HUB_MEDIA_TTL_SEC = parseInt(process.env.HUB_MEDIA_TTL_SEC || "900", 10);
 const META_GRAPH_VERSION =
   process.env.WHATSAPP_GRAPH_VERSION || process.env.META_GRAPH_VERSION || "v23.0";
-
-const DERIVED_HUB_API_CONFIG = deriveHubApiConfig(BOTHUB_WEBHOOK_URL);
-const BOTHUB_API_BASE_URL =
-  (process.env.BOTHUB_API_BASE_URL || process.env.CRM_API_BASE_URL || DERIVED_HUB_API_CONFIG.baseUrl || "")
-    .trim()
-    .replace(/\/$/, "");
-const BOTHUB_API_TOKEN =
-  (process.env.BOTHUB_API_TOKEN || process.env.CRM_API_TOKEN || process.env.CRM_JWT_TOKEN || "").trim();
-const BOTHUB_BOT_ID =
-  (process.env.BOTHUB_BOT_ID || process.env.CRM_BOT_ID || DERIVED_HUB_API_CONFIG.botId || "").trim();
-const HUB_QUEUE_SERVICE_TOURS =
-  (process.env.HUB_QUEUE_SERVICE_TOURS || process.env.HUB_QUEUE_SERVICE || "Servicio al cliente / Tours").trim();
-const HUB_QUEUE_COMMERCIAL =
-  (process.env.HUB_QUEUE_COMMERCIAL || "Asesoría comercial").trim();
 
 // =========================
 // HELPERS CONFIG
@@ -256,8 +248,6 @@ function defaultSession() {
     lastInboundMediaKind: "",
     lastInboundMediaSummary: "",
     lastInboundTranscript: "",
-    hubConversationId: "",
-    lastRoutedQueue: "",
 
     lead: defaultLead(),
 
@@ -321,8 +311,6 @@ if (session.conversationMode !== "human" && session.conversationMode !== "bot") 
 if (typeof session.lastInboundMediaKind !== "string") session.lastInboundMediaKind = "";
 if (typeof session.lastInboundMediaSummary !== "string") session.lastInboundMediaSummary = "";
 if (typeof session.lastInboundTranscript !== "string") session.lastInboundTranscript = "";
-if (typeof session.hubConversationId !== "string") session.hubConversationId = "";
-if (typeof session.lastRoutedQueue !== "string") session.lastRoutedQueue = "";
 
 if (!session.menuReminder || typeof session.menuReminder !== "object") {
   session.menuReminder = defaultMenuReminder();
@@ -560,7 +548,7 @@ async function bothubReportMessage(payload) {
     const raw = stableStringify(cleanPayload);
     const sig = crypto.createHmac("sha256", BOTHUB_WEBHOOK_SECRET).update(raw).digest("hex");
 
-    await axios.post(BOTHUB_WEBHOOK_URL, raw, {
+    const res = await axios.post(BOTHUB_WEBHOOK_URL, raw, {
       headers: {
         "Content-Type": "application/json",
         "X-HUB-SIGNATURE": sig,
@@ -568,164 +556,133 @@ async function bothubReportMessage(payload) {
       timeout: BOTHUB_TIMEOUT_MS,
       transformRequest: [(data) => data],
     });
+    return res?.data || null;
   } catch (e) {
     console.error("Bothub report failed:", e?.response?.data || e?.message || e);
+    return null;
   }
 }
 
-function deriveHubApiConfig(webhookUrl) {
+function deriveBothubApiBaseUrl() {
+  const explicit = String(BOTHUB_API_BASE_URL || "").trim();
+  if (explicit) return explicit.replace(/\/$/, "");
+  const raw = String(BOTHUB_WEBHOOK_URL || "").trim();
+  if (!raw) return "";
   try {
-    const raw = String(webhookUrl || "").trim();
-    if (!raw) return { baseUrl: "", botId: "" };
-
-    const parsed = new URL(raw);
-    const parts = parsed.pathname.replace(/\/+$/, "").split("/").filter(Boolean);
-    const apiIndex = parts.indexOf("api");
-    const webhooksIndex = parts.indexOf("webhooks");
-
-    if (apiIndex === -1 || webhooksIndex === -1 || webhooksIndex <= apiIndex) {
-      return { baseUrl: "", botId: "" };
-    }
-
-    let botId = "";
-    if (parts[webhooksIndex + 1] === "webhook") {
-      botId = decodeURIComponent(parts[webhooksIndex + 2] || "");
-    } else {
-      botId = decodeURIComponent(parts[webhooksIndex + 1] || "");
-    }
-
-    const baseUrl = `${parsed.origin}/${parts.slice(0, apiIndex + 1).join("/")}`.replace(/\/$/, "");
-    return { baseUrl, botId };
-  } catch {
-    return { baseUrl: "", botId: "" };
-  }
-}
-
-function getQueueForServiceLine(serviceLineKey) {
-  const key = String(serviceLineKey || "").trim();
-  if (["tours_colombia", "boletos_aereos", "solo_hoteles", "seguros_viaje", "traslados", "hablar_asesor"].includes(key)) {
-    return HUB_QUEUE_SERVICE_TOURS;
-  }
-  if (key === "paquetes_vacacionales") return HUB_QUEUE_COMMERCIAL;
-  return "";
-}
-
-async function bothubApiRequest(method, path, { params, data } = {}) {
-  if (!BOTHUB_API_BASE_URL || !BOTHUB_API_TOKEN) return null;
-
-  const url = `${BOTHUB_API_BASE_URL}${String(path || "").startsWith("/") ? String(path || "") : `/${String(path || "")}`}`;
-  const response = await axios({
-    method,
-    url,
-    params,
-    data,
-    timeout: Math.max(BOTHUB_TIMEOUT_MS * 2, 12000),
-    validateStatus: () => true,
-    headers: {
-      Authorization: `Bearer ${BOTHUB_API_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-  });
-
-  if (response.status < 200 || response.status >= 300) {
-    throw new Error(
-      response?.data?.error ||
-      response?.data?.message ||
-      `BOTHUB API ${String(method || "GET").toUpperCase()} ${path} failed (${response.status})`
-    );
-  }
-
-  return response.data;
-}
-
-async function findHubConversationByPhone(phone, session = null) {
-  const digits = normalizePhoneDigits(phone);
-  if (!digits || !BOTHUB_API_BASE_URL || !BOTHUB_API_TOKEN || !BOTHUB_BOT_ID) return null;
-
-  const phoneVariants = new Set([digits, ...buildPhoneVariants(digits)]);
-  const cachedConversationId = String(session?.hubConversationId || "").trim();
-
-  if (cachedConversationId) {
-    try {
-      const cached = await bothubApiRequest("get", `/conversations/${encodeURIComponent(cachedConversationId)}`);
-      const cachedPhone = normalizePhoneDigits(cached?.contact?.phone || cached?.phone || "");
-      if (cached?.id && cachedPhone && (phoneVariants.has(cachedPhone) || phoneVariants.has(toE164DigitsRD(cachedPhone)))) {
-        return cached;
+    const u = new URL(raw);
+    const p = u.pathname.replace(/\/$/, "");
+    const candidates = [
+      /\/api\/webhooks\/[^/]+$/,
+      /\/api\/webhooks\/webhook\/[^/]+$/,
+      /\/webhooks\/[^/]+$/,
+      /\/webhooks\/webhook\/[^/]+$/,
+    ];
+    let next = p;
+    for (const rgx of candidates) {
+      if (rgx.test(next)) {
+        next = next.replace(rgx, "");
+        break;
       }
-    } catch {}
+    }
+    u.pathname = next || "";
+    u.search = "";
+    u.hash = "";
+    return u.toString().replace(/\/$/, "");
+  } catch {
+    return "";
   }
-
-  const payload = await bothubApiRequest("get", "/conversations", {
-    params: { botId: BOTHUB_BOT_ID },
-  });
-  const conversations = Array.isArray(payload) ? payload : Array.isArray(payload?.items) ? payload.items : [];
-
-  const match = conversations.find((conversation) => {
-    const candidate = normalizePhoneDigits(conversation?.contact?.phone || conversation?.phone || "");
-    if (!candidate) return false;
-    return phoneVariants.has(candidate) || phoneVariants.has(toE164DigitsRD(candidate));
-  }) || null;
-
-  if (match?.id && session) session.hubConversationId = String(match.id);
-  return match;
 }
 
-async function routeConversationToQueue({ phone, queue, session = null, keepBotActive = true } = {}) {
-  const targetQueue = String(queue || "").trim();
-  const digits = normalizePhoneDigits(phone);
-
-  if (!targetQueue || !digits) {
-    return { ok: false, reason: "missing_phone_or_queue" };
-  }
-
-  if (!BOTHUB_API_BASE_URL || !BOTHUB_API_TOKEN || !BOTHUB_BOT_ID) {
-    return { ok: false, reason: "hub_api_not_configured" };
-  }
-
-  if (session?.lastRoutedQueue === targetQueue && session?.hubConversationId) {
-    return { ok: true, skipped: true, queue: targetQueue, conversationId: session.hubConversationId };
-  }
-
-  const conversation = await findHubConversationByPhone(digits, session);
-  if (!conversation?.id) {
-    return { ok: false, reason: "conversation_not_found" };
-  }
-
-  const patchData = {
-    queue: targetQueue,
-    ...(keepBotActive ? {} : { mode: "HUMAN" }),
-  };
-
-  const updated = await bothubApiRequest("patch", `/conversations/${encodeURIComponent(conversation.id)}`, {
-    data: patchData,
-  });
-
-  if (session) {
-    session.hubConversationId = String(updated?.id || conversation.id || "");
-    session.lastRoutedQueue = targetQueue;
-  }
-
-  return {
-    ok: true,
-    queue: targetQueue,
-    conversationId: updated?.id || conversation.id,
-  };
+function deriveBothubBotId() {
+  const explicit = String(BOTHUB_BOT_ID || "").trim();
+  if (explicit) return explicit;
+  const raw = String(BOTHUB_WEBHOOK_URL || "").trim();
+  if (!raw) return "";
+  const m = raw.match(/\/(?:api\/)?webhooks(?:\/webhook)?\/([^/?#]+)\/?(?:\?.*)?$/i);
+  return m?.[1] ? String(m[1]).trim() : "";
 }
 
-async function ensureServiceQueueRouting({ from, session, serviceLineKey } = {}) {
-  const queue = getQueueForServiceLine(serviceLineKey);
-  if (!queue) return { ok: false, reason: "no_queue_mapping" };
+function buildBothubAuthHeaders() {
+  const token = String(BOTHUB_JWT_TOKEN || "").trim();
+  if (!token) return {};
+  return { Authorization: `Bearer ${token}` };
+}
+
+function phoneMatchesConversation(convo, phone) {
+  const targetDigits = normalizePhoneDigits(phone);
+  if (!targetDigits) return false;
+  const candidates = [
+    convo?.contact?.phone,
+    convo?.phone,
+    convo?.waFrom,
+    convo?.waTo,
+  ]
+    .map((v) => normalizePhoneDigits(v))
+    .filter(Boolean);
+  return candidates.includes(targetDigits);
+}
+
+async function findBothubConversationIdByPhone(phone) {
+  const baseUrl = deriveBothubApiBaseUrl();
+  const botId = deriveBothubBotId();
+  if (!baseUrl || !botId) return "";
+  try {
+    const res = await axios.get(`${baseUrl}/api/conversations`, {
+      params: { botId },
+      headers: buildBothubAuthHeaders(),
+      timeout: Math.max(BOTHUB_TIMEOUT_MS, 8000),
+    });
+    const items = Array.isArray(res?.data) ? res.data : [];
+    const found = items.find((c) => phoneMatchesConversation(c, phone));
+    return String(found?.id || "").trim();
+  } catch (e) {
+    console.error("findBothubConversationIdByPhone failed:", e?.response?.data || e?.message || e);
+    return "";
+  }
+}
+
+async function routeConversationToQueue({ session, phone, queueName, reason = "service_selection" }) {
+  const nextQueue = String(queueName || "").trim();
+  if (!nextQueue) return { ok: false, reason: "missing_queue" };
+
+  if (!String(BOTHUB_JWT_TOKEN || "").trim()) {
+    return { ok: false, reason: "missing_bothub_jwt" };
+  }
+
+  if (session?.lastQueueRouted === nextQueue) {
+    return { ok: true, skipped: true, queue: nextQueue };
+  }
+
+  const baseUrl = deriveBothubApiBaseUrl();
+  if (!baseUrl) return { ok: false, reason: "missing_api_base" };
+
+  const conversationId = session?.hubConversationId || await findBothubConversationIdByPhone(phone);
+  if (!conversationId) return { ok: false, reason: "conversation_not_found" };
 
   try {
-    return await routeConversationToQueue({
-      phone: from,
-      queue,
-      session,
-      keepBotActive: true,
-    });
+    await axios.patch(
+      `${baseUrl}/api/conversations/${encodeURIComponent(conversationId)}`,
+      {
+        queue: nextQueue,
+        assigneeId: null,
+        transferReason: reason,
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          ...buildBothubAuthHeaders(),
+        },
+        timeout: Math.max(BOTHUB_TIMEOUT_MS, 8000),
+      }
+    );
+    if (session) {
+      session.hubConversationId = conversationId;
+      session.lastQueueRouted = nextQueue;
+    }
+    return { ok: true, conversationId, queue: nextQueue };
   } catch (e) {
-    console.error("ensureServiceQueueRouting error:", e?.response?.data || e?.message || e);
-    return { ok: false, reason: e?.message || "queue_routing_failed" };
+    console.error("routeConversationToQueue failed:", e?.response?.data || e?.message || e);
+    return { ok: false, reason: "patch_failed" };
   }
 }
 
@@ -2110,7 +2067,7 @@ function getDigitsOnly(text) {
 async function finalizeSimpleLead({ session, flow, from, phoneDigits }) {
   const summaryText = buildLeadSummary(flow.summaryTitle, flow.buildSummaryFields(session, phoneDigits));
   updateLead(session, { tour_key: "", quotePreview: summaryText, converted: false, followupSent: false });
-  await handoffToHumanTool({ summary: summaryText, queue: getQueueForServiceLine(flow.serviceLineKey), phone: phoneDigits, session, keepBotActive: true });
+  await handoffToHumanTool({ summary: summaryText });
   await notifyPersonalWhatsAppLeadSummary(summaryText, phoneDigits);
   await sendWhatsAppText(from, flow.buildConfirmationText(session));
   clearIntakeFlow(session);
@@ -2180,7 +2137,7 @@ async function startSimpleServiceFlow({ session, serviceLineKey, from }) {
     session.state = "await_package_destination";
     await sendWhatsAppText(from, `Perfecto 🎒 Vamos con *paquete vacacional*.
 
-Selecciona el paquete que te interesa y te mostraré su información.`);
+Te mostraré el listado completo y puedes responder con el *número* o con el *nombre* del paquete que deseas ver.`);
     await sendPackageDestinationsList(from, session);
     return true;
   }
@@ -2360,7 +2317,7 @@ Ahora dime tu *nombre completo*.` },
     startState: "await_package_destination",
     startPrompt: `Perfecto 🎒 Vamos con *paquetes vacacionales*.
 
-Dime el destino que te interesa o elige uno del menú.`,
+Responde con el *número* o el *nombre* del paquete que te interesa.`,
     afterStart: async ({ from }) => {
       await sendPackageDestinationsList(from, session);
     },
@@ -2435,7 +2392,7 @@ function categoriesEmojiText() {
 ` +
     `Estos son los tours disponibles en esta versión del bot.
 ` +
-    `Selecciona el tour que deseas ver y te mostraré su ficha antes de pedir tus datos.`
+    `Te mostraré el listado completo y puedes responder con el *número* o con el *nombre* del tour que deseas ver.`
   );
 }
 
@@ -2668,6 +2625,7 @@ async function sendWhatsAppDocument(to, documentUrl, filename, caption = "", rep
     body: caption || filename || "Documento enviado",
     source: reportSource,
     kind: "DOCUMENT",
+    mediaUrl: documentUrl,
     meta: { filename: filename || undefined, link: documentUrl },
   });
 }
@@ -2696,7 +2654,65 @@ async function sendWhatsAppImage(to, imageUrl, caption = "", reportSource = "BOT
     body: caption || "Imagen enviada",
     source: reportSource,
     kind: "IMAGE",
+    mediaUrl: imageUrl,
     meta: { link: imageUrl },
+  });
+}
+
+async function sendWhatsAppVideo(to, videoUrl, caption = "", reportSource = "BOT") {
+  if (!videoUrl) throw new Error("videoUrl is required");
+
+  const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
+  await axios.post(
+    url,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "video",
+      video: {
+        link: videoUrl,
+        caption: caption || undefined,
+      },
+    },
+    { headers: { Authorization: `Bearer ${WA_TOKEN}` } }
+  );
+
+  await bothubReportMessage({
+    direction: "OUTBOUND",
+    to: String(to),
+    body: caption || "Video enviado",
+    source: reportSource,
+    kind: "VIDEO",
+    mediaUrl: videoUrl,
+    meta: { link: videoUrl },
+  });
+}
+
+async function sendWhatsAppAudio(to, audioUrl, reportSource = "BOT") {
+  if (!audioUrl) throw new Error("audioUrl is required");
+
+  const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
+  await axios.post(
+    url,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "audio",
+      audio: {
+        link: audioUrl,
+      },
+    },
+    { headers: { Authorization: `Bearer ${WA_TOKEN}` } }
+  );
+
+  await bothubReportMessage({
+    direction: "OUTBOUND",
+    to: String(to),
+    body: "Audio enviado",
+    source: reportSource,
+    kind: "AUDIO",
+    mediaUrl: audioUrl,
+    meta: { link: audioUrl },
   });
 }
 
@@ -2800,7 +2816,7 @@ async function finalizePackageLead({ session, from }) {
   const contactPhone = String(from || "").replace(/[^\d]/g, "");
   const summaryText = buildPackageLeadSummary(session, contactPhone);
   updateLead(session, { tour_key: "", quotePreview: summaryText, converted: false, followupSent: false });
-  await handoffToHumanTool({ summary: summaryText, queue: getQueueForServiceLine("paquetes_vacacionales"), phone: contactPhone, session, keepBotActive: true });
+  await handoffToHumanTool({ summary: summaryText });
   await notifyPersonalWhatsAppLeadSummary(summaryText, contactPhone);
   const pkg = getPackageDestinationByKey(session.pendingDestination);
   const adults = Math.max(Number(session.pendingPassengers || 0) - Number(session.pendingChildren || 0), 0);
@@ -2836,15 +2852,15 @@ async function sendTourOriginsList(to) {
 function formatPackageDestinationsTextList(session) {
   const packages = Array.isArray(PACKAGE_DESTINATIONS) ? PACKAGE_DESTINATIONS : [];
   if (!packages.length) return "No encontré paquetes vacacionales disponibles ahora mismo 🙏";
-  if (session) session.lastPackages = packages.map((pkg) => ({ key: pkg.key, title: pkg.title }));
+  if (session) session.lastPackages = packages.map((p) => ({ key: p.key, title: p.title }));
   return (
     `🎒 *Paquetes vacacionales*
 
 ` +
-    `Estas son las opciones disponibles en este momento:
+    `Estos son los paquetes disponibles:
 
 ` +
-    packages.map((pkg, i) => `${i + 1}. ${pkg.title}`).join("\n") +
+    packages.map((p, i) => `${i + 1}. ${p.title}`).join("\n") +
     `
 
 Responde con el *número* o con el *nombre* del paquete que deseas ver.`
@@ -3228,28 +3244,8 @@ async function cancelReservationTool({ reservation_id, reason }) {
   return { ok: true, reservation_id };
 }
 
-async function handoffToHumanTool({ summary, queue = "", phone = "", session = null, keepBotActive = true } = {}) {
-  const result = {
-    ok: true,
-    routed: false,
-    queue: String(queue || "").trim() || null,
-    summary,
-  };
-
-  if (!result.queue || !phone) return result;
-
-  try {
-    const routing = await routeConversationToQueue({
-      phone,
-      queue: result.queue,
-      session,
-      keepBotActive,
-    });
-    return { ...result, routed: Boolean(routing?.ok), routing };
-  } catch (e) {
-    console.error("handoffToHumanTool error:", e?.response?.data || e?.message || e);
-    return { ...result, error: e?.message || "handoff_failed" };
-  }
+async function handoffToHumanTool({ summary }) {
+  return { ok: true, routed: true, summary };
 }
 
 async function findUpcomingReservationByPhone(phone, windowDays = 180) {
@@ -3654,12 +3650,64 @@ app.post("/agent_message", async (req, res) => {
       return res.status(401).json({ error: "Invalid signature" });
     }
 
-    const { waTo, text } = req.body || {};
-    if (!waTo || !String(waTo).trim()) return res.status(400).json({ error: "waTo is required" });
-    if (!text || !String(text).trim()) return res.status(400).json({ error: "text is required" });
+    const body = req.body || {};
+    const waTo = String(body.waTo || "").trim();
+    const text = String(body.text || body.body || "").trim();
+    const explicitType = String(body.type || "").trim().toLowerCase();
+    const imageUrl = String(body.imageUrl || body.image_url || body.mediaUrl || body.media_url || "").trim();
+    const videoUrl = String(body.videoUrl || body.video_url || "").trim();
+    const audioUrl = String(body.audioUrl || body.audio_url || body.voiceUrl || body.voice_url || "").trim();
+    const documentUrl = String(body.documentUrl || body.document_url || body.fileUrl || body.file_url || "").trim();
+    const caption = String(body.caption || body.mediaCaption || "").trim();
+    const filename = String(body.filename || body.fileName || "").trim();
 
-    await sendWhatsAppText(String(waTo), String(text), "AGENT");
-    return res.json({ ok: true });
+    if (!waTo) return res.status(400).json({ error: "waTo is required" });
+
+    const inferredType = explicitType || (
+      imageUrl ? "image" :
+      videoUrl ? "video" :
+      audioUrl ? "audio" :
+      documentUrl ? "document" :
+      text ? "text" : ""
+    );
+
+    if (!inferredType) {
+      return res.status(400).json({
+        error: "One of text, imageUrl/mediaUrl, videoUrl, audioUrl or documentUrl is required",
+      });
+    }
+
+    if (inferredType === "text") {
+      if (!text) return res.status(400).json({ error: "text is required" });
+      await sendWhatsAppText(waTo, text, "AGENT");
+      return res.json({ ok: true, sentType: "text" });
+    }
+
+    if (inferredType === "image") {
+      if (!imageUrl) return res.status(400).json({ error: "imageUrl/mediaUrl is required" });
+      await sendWhatsAppImage(waTo, imageUrl, caption || text, "AGENT");
+      return res.json({ ok: true, sentType: "image" });
+    }
+
+    if (inferredType === "video") {
+      if (!videoUrl) return res.status(400).json({ error: "videoUrl is required" });
+      await sendWhatsAppVideo(waTo, videoUrl, caption || text, "AGENT");
+      return res.json({ ok: true, sentType: "video" });
+    }
+
+    if (inferredType === "audio") {
+      if (!audioUrl) return res.status(400).json({ error: "audioUrl/voiceUrl is required" });
+      await sendWhatsAppAudio(waTo, audioUrl, "AGENT");
+      return res.json({ ok: true, sentType: "audio" });
+    }
+
+    if (inferredType === "document") {
+      if (!documentUrl) return res.status(400).json({ error: "documentUrl/fileUrl is required" });
+      await sendWhatsAppDocument(waTo, documentUrl, filename || undefined, caption || text, "AGENT");
+      return res.json({ ok: true, sentType: "document" });
+    }
+
+    return res.status(400).json({ error: "Unsupported type" });
   } catch (e) {
     console.error("agent_message error:", e?.response?.data || e?.message || e);
     return res.status(500).json({ error: "Internal error" });
@@ -3788,7 +3836,7 @@ app.post("/webhook", async (req, res) => {
     const inboundMeta = preprocessed.inboundMeta || extractInboundMeta(msg);
     const inboundMetaWithMediaUrl = attachHubMediaUrl(req, inboundMeta);
 
-    await bothubReportMessage({
+    const bothubInboundAck = await bothubReportMessage({
       direction: "INBOUND",
       from: String(from),
       body: String(userText),
@@ -3799,6 +3847,7 @@ app.post("/webhook", async (req, res) => {
       meta: inboundMetaWithMediaUrl,
       mediaUrl: inboundMetaWithMediaUrl?.mediaUrl || undefined,
     });
+    if (bothubInboundAck?.conversationId) session.hubConversationId = String(bothubInboundAck.conversationId);
 
     if (isHumanModeDisableCommand(tNorm)) {
       session.conversationMode = "bot";
@@ -3931,7 +3980,7 @@ app.post("/webhook", async (req, res) => {
         session.pendingRealTourKey = null;
         session.pendingDesiredDate = null;
         await sendWhatsAppText(from, `↩️ Perfecto. Volviste al listado de *tours en Colombia*.`);
-        await sendRealTourGroupsList(from);
+        await sendRealTourGroupsList(from, session);
         return res.sendStatus(200);
       }
 
@@ -3947,7 +3996,7 @@ app.post("/webhook", async (req, res) => {
         clearIntakeFlow(session);
         session.pendingServiceLine = "paquetes_vacacionales";
         session.state = "await_package_destination";
-        await sendWhatsAppText(from, `↩️ Perfecto. Volviste al listado de *paquetes vacacionales*.`);
+        await sendWhatsAppText(from, `↩️ Perfecto. Volviste al listado de *paquetes vacacionales*. Responde con el *número* o el *nombre* del paquete que quieres ver.`);
         await sendPackageDestinationsList(from, session);
         return res.sendStatus(200);
       }
@@ -3975,9 +4024,8 @@ app.post("/webhook", async (req, res) => {
       session.pendingServiceLine = "tours_colombia";
       session.pendingRealTourGroup = "tours_colombia";
       session.state = "await_real_tour_choice";
-      await ensureServiceQueueRouting({ from, session, serviceLineKey: "tours_colombia" });
       await sendWhatsAppText(from, categoriesEmojiText());
-      await sendRealTourGroupsList(from);
+      await sendRealTourGroupsList(from, session);
       return res.sendStatus(200);
     }
 
@@ -4118,7 +4166,7 @@ Ahora indícame tu *nombre completo*.`);
       const dateMeta = getRequestedDateMeta(session.pendingDesiredDate);
       const summaryText = buildRealTourLeadSummary(session, contactPhone);
 
-      await handoffToHumanTool({ summary: summaryText, queue: getQueueForServiceLine("tours_colombia"), phone: contactPhone, session, keepBotActive: true });
+      await handoffToHumanTool({ summary: summaryText });
       await notifyPersonalWhatsAppLeadSummary(summaryText, contactPhone);
       await createRealTourLeadCalendarEvent(session, contactPhone);
 
@@ -4158,9 +4206,9 @@ Ahora indícame tu *nombre completo*.`);
     // PACKAGE FLOW - COLOMBIA
     // =========================
     if (session.state === "await_package_destination") {
-      const packageKey = detectPackageDestinationKeyFromUser(userText);
+      const packageKey = detectPackageDestinationKeyFromUser(userText, session);
       if (!packageKey) {
-        await sendWhatsAppText(from, `Selecciona uno de los *paquetes vacacionales disponibles* 🙏`);
+        await sendWhatsAppText(from, `Selecciona uno de los *paquetes vacacionales disponibles* respondiendo con el *número* o el *nombre* 🙏`);
         await sendPackageDestinationsList(from, session);
         return res.sendStatus(200);
       }
@@ -4267,7 +4315,7 @@ Ej: 5, 8`);
       session.pendingRealTourGroup = "tours_colombia";
       session.state = "await_real_tour_choice";
       await sendWhatsAppText(from, categoriesEmojiText());
-      await sendRealTourGroupsList(from);
+      await sendRealTourGroupsList(from, session);
       return res.sendStatus(200);
     }
 
@@ -4278,10 +4326,9 @@ Ej: 5, 8`);
       session.pendingServiceLine = "tours_colombia";
       session.pendingRealTourGroup = directRealTourGroup;
       session.state = "await_real_tour_choice";
-      await ensureServiceQueueRouting({ from, session, serviceLineKey: "tours_colombia" });
       await sendWhatsAppText(from, `Perfecto 🌴
 Aquí tienes los *tours disponibles en Colombia*.`);
-      await sendRealTourGroupsList(from);
+      await sendRealTourGroupsList(from, session);
       return res.sendStatus(200);
     }
 
@@ -4291,10 +4338,10 @@ Aquí tienes los *tours disponibles en Colombia*.`);
       clearIntakeFlow(session);
       disableMenuInactivityReminder(session);
       session.pendingServiceLine = "tours_colombia";
+      await routeConversationToQueue({ session, phone: from, queueName: HUB_QUEUE_SERVICE_TOURS, reason: "tours_colombia" });
       session.pendingRealTourGroup = tour?.groupKey || null;
       session.pendingRealTourKey = directRealTourKey;
       session.state = "await_real_tour_date";
-      await ensureServiceQueueRouting({ from, session, serviceLineKey: "tours_colombia" });
       updateLead(session, { tour_key: directRealTourKey, quotePreview: "", converted: false, followupSent: false });
       await sendRealTourPresentation(from, tour);
       await sendWhatsAppText(from, `📅 Si deseas reservar *${tour?.title || "este tour"}*, dime la *fecha* que te interesa y seguimos con tu solicitud.`);
@@ -4307,6 +4354,12 @@ Aquí tienes los *tours disponibles en Colombia*.`);
       disableMenuInactivityReminder(session);
       session.pendingServiceLine = serviceLineKey;
 
+      if (["tours_colombia", "boletos_aereos", "solo_hoteles", "seguros_viaje", "traslados", "hablar_asesor"].includes(serviceLineKey)) {
+        await routeConversationToQueue({ session, phone: from, queueName: HUB_QUEUE_SERVICE_TOURS, reason: serviceLineKey });
+      } else if (serviceLineKey === "paquetes_vacacionales") {
+        await routeConversationToQueue({ session, phone: from, queueName: HUB_QUEUE_COMMERCIAL, reason: serviceLineKey });
+      }
+
       if (serviceLineKey === "catalogo_pdf") {
         await sendCatalogDocument(from);
         return res.sendStatus(200);
@@ -4318,9 +4371,10 @@ Aquí tienes los *tours disponibles en Colombia*.`);
       }
 
       if (serviceLineKey === "tours_colombia") {
-        session.state = "await_tour_group";
+        session.pendingRealTourGroup = "tours_colombia";
+        session.state = "await_real_tour_choice";
         await sendWhatsAppText(from, categoriesEmojiText());
-        await sendRealTourGroupsList(from);
+        await sendRealTourGroupsList(from, session);
         return res.sendStatus(200);
       }
 
