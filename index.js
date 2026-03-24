@@ -1336,9 +1336,23 @@ function detectOriginKeyFromUser(text) {
   return null;
 }
 
-function detectPackageDestinationKeyFromUser(text) {
+function detectPackageDestinationKeyFromUser(text, session = null) {
   const t = normalizeText(text);
   if (PACKAGE_DESTINATION_ID_TO_KEY[text]) return PACKAGE_DESTINATION_ID_TO_KEY[text];
+
+  const options = Array.isArray(session?.lastPackages) && session.lastPackages.length
+    ? session.lastPackages
+    : PACKAGE_DESTINATIONS.map((p) => ({ key: p.key, title: p.title }));
+
+  if (/^\d+$/.test(t)) {
+    const idx = parseInt(t, 10) - 1;
+    if (idx >= 0 && idx < options.length) return options[idx].key;
+  }
+
+  for (const opt of options) {
+    const norm = normalizeText(opt.title);
+    if (t === norm || t.includes(norm)) return opt.key;
+  }
 
   for (const p of PACKAGE_DESTINATIONS) {
     const norm = normalizeText(p.title);
@@ -1957,7 +1971,7 @@ Envíamelo así: 829XXXXXXX`);
       await finalizeSimpleLead({ session, flow, from, phoneDigits: value });
       return true;
     } else if (step.kind === "packageDestination") {
-      const packageKey = detectPackageDestinationKeyFromUser(userText);
+      const packageKey = detectPackageDestinationKeyFromUser(userText, session);
       if (packageKey && packageKey !== "otro_destino") {
         const pkg = getPackageDestinationByKey(packageKey);
         value = pkg?.title || userText;
@@ -1970,7 +1984,7 @@ Envíamelo así: 829XXXXXXX`);
         value = userText;
       } else {
         await sendWhatsAppText(from, step.invalidPrompt);
-        await sendPackageDestinationsList(from);
+        await sendPackageDestinationsList(from, session);
         return true;
       }
     }
@@ -1992,8 +2006,8 @@ async function startSimpleServiceFlow({ session, serviceLineKey, from }) {
     session.state = "await_package_destination";
     await sendWhatsAppText(from, `Perfecto 🎒 Vamos con *paquete vacacional*.
 
-Selecciona el paquete que te interesa y te mostraré su información.`);
-    await sendPackageDestinationsList(from);
+Te mostraré el listado completo y puedes responder con el *número* o con el *nombre* del paquete que deseas ver.`);
+    await sendPackageDestinationsList(from, session);
     return true;
   }
   const flow = SIMPLE_SERVICE_FLOWS.find((item) => item.serviceLineKey === serviceLineKey);
@@ -2172,9 +2186,9 @@ Ahora dime tu *nombre completo*.` },
     startState: "await_package_destination",
     startPrompt: `Perfecto 🎒 Vamos con *paquetes vacacionales*.
 
-Dime el destino que te interesa o elige uno del menú.`,
+Responde con el *número* o el *nombre* del paquete que te interesa.`,
     afterStart: async ({ from }) => {
-      await sendPackageDestinationsList(from);
+      await sendPackageDestinationsList(from, session);
     },
     summaryTitle: "Nueva solicitud de paquete vacacional",
     buildSummaryFields: (session, phoneDigits) => [
@@ -2645,17 +2659,27 @@ async function sendTourOriginsList(to) {
   });
 }
 
-async function sendPackageDestinationsList(to) {
-  const rows = PACKAGE_DESTINATIONS.map((d) => ({ id: d.id, title: waRowTitle(d.title), description: "" }));
-  await sendInteractiveList(to, {
-    header: "Paquetes vacacionales",
-    body: "Elige el paquete que te interesa 👇",
-    button: "Ver paquetes",
-    sectionTitle: "Paquetes disponibles",
-    rows,
-  });
+function formatPackageDestinationsTextList(session) {
+  const packages = Array.isArray(PACKAGE_DESTINATIONS) ? PACKAGE_DESTINATIONS : [];
+  if (!packages.length) return "No encontré paquetes vacacionales disponibles ahora mismo 🙏";
+  if (session) session.lastPackages = packages.map((p) => ({ key: p.key, title: p.title }));
+  return (
+    `🎒 *Paquetes vacacionales*
+
+` +
+    `Estos son los paquetes disponibles:
+
+` +
+    packages.map((p, i) => `${i + 1}. ${p.title}`).join("\n") +
+    `
+
+Responde con el *número* o con el *nombre* del paquete que deseas ver.`
+  );
 }
 
+async function sendPackageDestinationsList(to, session = null) {
+  await sendWhatsAppText(to, formatPackageDestinationsTextList(session));
+}
 
 async function sendRealTourGroupsList(to, session) {
   await sendRealToursByGroup(to, "tours_colombia", session);
@@ -3729,8 +3753,8 @@ app.post("/webhook", async (req, res) => {
         clearIntakeFlow(session);
         session.pendingServiceLine = "paquetes_vacacionales";
         session.state = "await_package_destination";
-        await sendWhatsAppText(from, `↩️ Perfecto. Volviste al listado de *paquetes vacacionales*.`);
-        await sendPackageDestinationsList(from);
+        await sendWhatsAppText(from, `↩️ Perfecto. Volviste al listado de *paquetes vacacionales*. Responde con el *número* o el *nombre* del paquete que quieres ver.`);
+        await sendPackageDestinationsList(from, session);
         return res.sendStatus(200);
       }
 
@@ -3939,10 +3963,10 @@ Ahora indícame tu *nombre completo*.`);
     // PACKAGE FLOW - COLOMBIA
     // =========================
     if (session.state === "await_package_destination") {
-      const packageKey = detectPackageDestinationKeyFromUser(userText);
+      const packageKey = detectPackageDestinationKeyFromUser(userText, session);
       if (!packageKey) {
-        await sendWhatsAppText(from, `Selecciona uno de los *paquetes vacacionales disponibles* 🙏`);
-        await sendPackageDestinationsList(from);
+        await sendWhatsAppText(from, `Selecciona uno de los *paquetes vacacionales disponibles* respondiendo con el *número* o el *nombre* 🙏`);
+        await sendPackageDestinationsList(from, session);
         return res.sendStatus(200);
       }
       disableMenuInactivityReminder(session);
