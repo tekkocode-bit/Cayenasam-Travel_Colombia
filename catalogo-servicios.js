@@ -46,6 +46,26 @@ export const PACKAGE_DESTINATIONS = [
     includesText: "Ingreso al Parque del Café, Panaca, Salento y Valle del Cocora, termales de Santa Rosa de Cabal, Filandia, tour panorámico, traslados, alojamiento, alimentación y tarjeta de asistencia médica.",
     noteText: "Algunas experiencias pueden cambiar Panaca por opciones adicionales con cargo extra. Validar disponibilidad y versión del plan.",
   },
+  {
+    key: "punta_cana_imperdible",
+    id: "pkg_punta_cana_imperdible",
+    title: "Punta Cana Imperdible",
+    imageUrl: "https://res.cloudinary.com/daqqrtg0b/image/upload/v1774312569/Punta_cana_imperdible_okfsvh.jpg",
+    durationText: "Plan de 5 días y 4 noches.",
+    dateText: "Del 23 al 27 de abril.",
+    includesText: "Hotel todo incluido (Sunscape Coco Punta Cana), transfer, seguros de viaje, bienvenida personalizada y staff.",
+    noteText: "No incluye gastos personales ni propinas.",
+  },
+  {
+    key: "semana_santa_punta_cana",
+    id: "pkg_semana_santa_punta_cana",
+    title: "Semana Santa en Punta Cana",
+    imageUrl: "https://res.cloudinary.com/daqqrtg0b/image/upload/v1774312538/Semana_Santa_en_punta_cana_rqlubh.jpg",
+    durationText: "Plan de 6 días y 5 noches.",
+    dateText: "Del 31 de marzo al 05 de abril.",
+    includesText: "Hotel todo incluido (Occidental Caribe), transfer, seguros de viaje, bienvenida personalizada y staff.",
+    noteText: "No incluye gastos personales ni propinas.",
+  },
 ];
 
 export const PACKAGE_DESTINATION_ID_TO_KEY = Object.fromEntries(PACKAGE_DESTINATIONS.map((p) => [p.id, p.key]));
