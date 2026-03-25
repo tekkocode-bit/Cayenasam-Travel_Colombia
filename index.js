@@ -1,6 +1,11 @@
 import express from "express";
 import axios from "axios";
 import crypto from "crypto";
+import fs from "fs/promises";
+import os from "os";
+import path from "path";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import { google } from "googleapis";
 import Redis from "ioredis";
 // =========================
@@ -28,6 +33,7 @@ const REAL_TOUR_GROUP_ID_TO_KEY = Object.fromEntries(REAL_TOUR_GROUPS.map((g) =>
 const REAL_TOURS = safeJson(process.env.REAL_TOUR_CATALOG_JSON, null) || buildRealToursCatalog();
 const REAL_TOUR_ID_TO_KEY = Object.fromEntries(REAL_TOURS.map((t) => [t.id, t.key]));
 
+const execFileAsync = promisify(execFile);
 
 // =========================
 // ENV
@@ -773,6 +779,481 @@ function extFromMimeType(mime) {
   return "";
 }
 
+function mimeFromExtension(nameOrUrl) {
+  const raw = String(nameOrUrl || "").toLowerCase().split("?")[0].split("#")[0];
+  if (!raw) return "";
+  if (raw.endsWith(".jpg") || raw.endsWith(".jpeg")) return "image/jpeg";
+  if (raw.endsWith(".png")) return "image/png";
+  if (raw.endsWith(".gif")) return "image/gif";
+  if (raw.endsWith(".webp")) return "image/webp";
+  if (raw.endsWith(".mp4")) return "video/mp4";
+  if (raw.endsWith(".mov")) return "video/quicktime";
+  if (raw.endsWith(".webm")) return "video/webm";
+  if (raw.endsWith(".mp3")) return "audio/mpeg";
+  if (raw.endsWith(".wav")) return "audio/wav";
+  if (raw.endsWith(".ogg") || raw.endsWith(".opus")) return "audio/ogg";
+  if (raw.endsWith(".aac")) return "audio/aac";
+  if (raw.endsWith(".amr")) return "audio/amr";
+  if (raw.endsWith(".pdf")) return "application/pdf";
+  if (raw.endsWith(".doc")) return "application/msword";
+  if (raw.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (raw.endsWith(".xls")) return "application/vnd.ms-excel";
+  if (raw.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  if (raw.endsWith(".ppt")) return "application/vnd.ms-powerpoint";
+  if (raw.endsWith(".pptx")) return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+  if (raw.endsWith(".txt")) return "text/plain";
+  return "";
+}
+
+function extFromNameOrUrl(nameOrUrl) {
+  const raw = String(nameOrUrl || "").split("?")[0].split("#")[0];
+  const ext = path.extname(raw || "");
+  return ext || extFromMimeType(mimeFromExtension(raw));
+}
+
+function guessFilenameFromUrl(url, fallbackBase = "file", mimeType = "") {
+  try {
+    const parsed = new URL(String(url || ""));
+    const candidate = path.basename(parsed.pathname || "").trim();
+    if (candidate) return sanitizeFileName(candidate, `${fallbackBase}${extFromMimeType(mimeType)}`);
+  } catch {}
+  return sanitizeFileName(`${fallbackBase}${extFromMimeType(mimeType) || ""}`, fallbackBase);
+}
+
+function normalizeAgentMediaType(type, mimeType = "", filename = "", url = "") {
+  const rawType = normalizeText(type || "").replace(/[_\-]+/g, " ");
+  if (["image", "imagen", "photo", "foto"].includes(rawType)) return "image";
+  if (["video", "video note", "video nota"].includes(rawType)) return "video";
+  if (["audio", "nota de voz", "voice", "voice note", "ptt"].includes(rawType)) return "audio";
+  if (["document", "documento", "file", "archivo"].includes(rawType)) return "document";
+  if (["location", "ubicacion", "ubicación", "geo", "geolocation"].includes(rawType)) return "location";
+  if (["text", "texto", "note", "nota"].includes(rawType)) return "text";
+
+  const mime = String(mimeType || mimeFromExtension(filename || url || "")).toLowerCase();
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("video/")) return "video";
+  if (mime.startsWith("audio/")) return "audio";
+  if (mime) return "document";
+  return "";
+}
+
+function normalizeAgentMediaMime(mimeType = "", filename = "", url = "") {
+  const mime = String(mimeType || "").trim().toLowerCase();
+  if (mime) return mime;
+  return String(mimeFromExtension(filename || url || "")).trim().toLowerCase();
+}
+
+function extractDataUrlBuffer(dataUrl) {
+  const raw = String(dataUrl || "").trim();
+  const match = raw.match(/^data:([^;,]+)(;base64)?,(.*)$/i);
+  if (!match) return null;
+  const mimeType = String(match[1] || "application/octet-stream").trim().toLowerCase();
+  const isBase64 = Boolean(match[2]);
+  const payload = match[3] || "";
+  const buffer = isBase64
+    ? Buffer.from(payload, "base64")
+    : Buffer.from(decodeURIComponent(payload), "utf8");
+  return { buffer, mimeType };
+}
+
+async function downloadRemoteOrDataMedia(sourceUrl, expectedMimeType = "", fallbackFilename = "file") {
+  const dataUrl = extractDataUrlBuffer(sourceUrl);
+  if (dataUrl) {
+    return {
+      buffer: dataUrl.buffer,
+      mimeType: normalizeAgentMediaMime(expectedMimeType || dataUrl.mimeType, fallbackFilename, sourceUrl) || dataUrl.mimeType,
+      filename: sanitizeFileName(fallbackFilename || `file${extFromMimeType(dataUrl.mimeType)}`, "file"),
+      sourceUrl,
+    };
+  }
+
+  const res = await axios.get(String(sourceUrl || ""), {
+    responseType: "arraybuffer",
+    timeout: 60000,
+    maxRedirects: 5,
+    validateStatus: () => true,
+  });
+
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error(`No se pudo descargar el archivo remoto (${res.status})`);
+  }
+
+  const headerMime = String(res.headers?.["content-type"] || "").split(";")[0].trim().toLowerCase();
+  const contentDisposition = String(res.headers?.["content-disposition"] || "");
+  const dispositionMatch = contentDisposition.match(/filename\*?=(?:UTF-8''|")?([^";]+)/i);
+  const dispositionName = dispositionMatch?.[1] ? decodeURIComponent(dispositionMatch[1].replace(/"/g, "").trim()) : "";
+  const filename = sanitizeFileName(
+    dispositionName || fallbackFilename || guessFilenameFromUrl(sourceUrl, fallbackFilename || "file", headerMime || expectedMimeType),
+    "file"
+  );
+
+  return {
+    buffer: Buffer.from(res.data),
+    mimeType: normalizeAgentMediaMime(expectedMimeType || headerMime, filename, sourceUrl) || "application/octet-stream",
+    filename,
+    sourceUrl,
+  };
+}
+
+async function transcodeWithFfmpeg(buffer, inputExt, outputExt, ffmpegArgs) {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "tekko-media-"));
+  const inputPath = path.join(tmpDir, `input${inputExt || ""}`);
+  const outputPath = path.join(tmpDir, `output${outputExt || ""}`);
+
+  try {
+    await fs.writeFile(inputPath, buffer);
+    await execFileAsync("ffmpeg", ["-y", "-i", inputPath, ...ffmpegArgs, outputPath]);
+    return await fs.readFile(outputPath);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function ensureSupportedAgentMedia({ type, buffer, mimeType, filename }) {
+  const normalizedType = normalizeAgentMediaType(type, mimeType, filename);
+  const currentMime = normalizeAgentMediaMime(mimeType, filename) || "application/octet-stream";
+  const safeName = sanitizeFileName(filename || `file${extFromMimeType(currentMime)}`, "file");
+
+  if (normalizedType === "audio") {
+    if (["audio/aac", "audio/mp4", "audio/mpeg", "audio/amr", "audio/ogg", "audio/opus"].includes(currentMime)) {
+      return { buffer, mimeType: currentMime, filename: safeName };
+    }
+    if (currentMime === "audio/webm" || currentMime === "video/webm") {
+      const converted = await transcodeWithFfmpeg(buffer, ".webm", ".ogg", ["-vn", "-c:a", "libopus"]);
+      return {
+        buffer: converted,
+        mimeType: "audio/ogg",
+        filename: sanitizeFileName(safeName.replace(/\.[^.]+$/, "") + ".ogg", "audio.ogg"),
+      };
+    }
+  }
+
+  if (normalizedType === "video") {
+    if (currentMime === "video/mp4" || currentMime === "video/3gpp") {
+      return { buffer, mimeType: currentMime, filename: safeName };
+    }
+    if (currentMime === "video/webm") {
+      const converted = await transcodeWithFfmpeg(buffer, ".webm", ".mp4", ["-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart"]);
+      return {
+        buffer: converted,
+        mimeType: "video/mp4",
+        filename: sanitizeFileName(safeName.replace(/\.[^.]+$/, "") + ".mp4", "video.mp4"),
+      };
+    }
+  }
+
+  return { buffer, mimeType: currentMime, filename: safeName };
+}
+
+async function uploadMetaMediaBuffer({ buffer, mimeType, filename }) {
+  if (!WA_TOKEN) throw new Error("WA_TOKEN not configured");
+  if (!PHONE_NUMBER_ID) throw new Error("PHONE_NUMBER_ID not configured");
+
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("type", mimeType || "application/octet-stream");
+  form.append(
+    "file",
+    new Blob([buffer], { type: mimeType || "application/octet-stream" }),
+    sanitizeFileName(filename || `file${extFromMimeType(mimeType)}`, "file")
+  );
+
+  const resp = await fetch(`https://graph.facebook.com/${META_GRAPH_VERSION}/${encodeURIComponent(PHONE_NUMBER_ID)}/media`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${WA_TOKEN}` },
+    body: form,
+  });
+
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok || !data?.id) {
+    throw new Error(data?.error?.message || `Meta media upload failed (${resp.status})`);
+  }
+
+  return String(data.id);
+}
+
+async function sendWhatsAppLocation(to, { latitude, longitude, name = "", address = "" }, reportSource = "BOT") {
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    throw new Error("latitude and longitude are required");
+  }
+
+  const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
+  await axios.post(
+    url,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "location",
+      location: {
+        latitude: lat,
+        longitude: lng,
+        name: name || undefined,
+        address: address || undefined,
+      },
+    },
+    { headers: { Authorization: `Bearer ${WA_TOKEN}` } }
+  );
+
+  await bothubReportMessage({
+    direction: "OUTBOUND",
+    to: String(to),
+    body: `📍 Ubicación enviada${name ? `: ${name}` : ""}`,
+    source: reportSource,
+    kind: "LOCATION",
+    meta: {
+      latitude: lat,
+      longitude: lng,
+      name: name || undefined,
+      address: address || undefined,
+    },
+  });
+}
+
+async function sendWhatsAppMediaById(to, type, mediaId, { caption = "", filename = "" } = {}, reportSource = "BOT") {
+  if (!mediaId) throw new Error("mediaId is required");
+  const normalizedType = normalizeAgentMediaType(type);
+  if (!["image", "video", "audio", "document"].includes(normalizedType)) {
+    throw new Error(`Unsupported media type: ${type}`);
+  }
+
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: normalizedType,
+    [normalizedType]: {
+      id: mediaId,
+    },
+  };
+
+  if ((normalizedType === "image" || normalizedType === "video") && caption) {
+    payload[normalizedType].caption = caption;
+  }
+  if (normalizedType === "document") {
+    if (caption) payload.document.caption = caption;
+    if (filename) payload.document.filename = filename;
+  }
+
+  const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
+  await axios.post(url, payload, { headers: { Authorization: `Bearer ${WA_TOKEN}` } });
+
+  await bothubReportMessage({
+    direction: "OUTBOUND",
+    to: String(to),
+    body:
+      caption ||
+      (normalizedType === "image"
+        ? "Imagen enviada"
+        : normalizedType === "video"
+          ? "Video enviado"
+          : normalizedType === "audio"
+            ? "Audio enviado"
+            : filename || "Documento enviado"),
+    source: reportSource,
+    kind: normalizedType.toUpperCase(),
+    mediaId: String(mediaId),
+    meta: {
+      filename: filename || undefined,
+      caption: caption || undefined,
+    },
+  });
+}
+
+function getNestedValue(obj, pathExpr) {
+  const parts = String(pathExpr || "").split(".").filter(Boolean);
+  let current = obj;
+  for (const part of parts) {
+    if (current == null) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+function firstNonEmptyString(obj, paths) {
+  for (const pathExpr of paths) {
+    const value = getNestedValue(obj, pathExpr);
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function firstDefinedValue(obj, paths) {
+  for (const pathExpr of paths) {
+    const value = getNestedValue(obj, pathExpr);
+    if (value !== undefined && value !== null && value !== "") return value;
+  }
+  return undefined;
+}
+
+function extractAgentMessagePayload(body) {
+  const raw = body || {};
+  const waTo = firstNonEmptyString(raw, [
+    "waTo",
+    "wa_to",
+    "to",
+    "phone",
+    "recipient",
+    "contact.phone",
+    "conversation.phone",
+    "conversation.contact.phone",
+    "conversation.contact.whatsapp",
+    "message.waTo",
+    "message.to",
+  ]);
+
+  const filename = firstNonEmptyString(raw, [
+    "filename",
+    "fileName",
+    "name",
+    "message.filename",
+    "message.fileName",
+    "message.media.filename",
+    "message.media.fileName",
+    "media.filename",
+    "media.fileName",
+    "attachment.filename",
+    "attachment.fileName",
+    "attachments.0.filename",
+    "attachments.0.fileName",
+    "attachments.0.name",
+  ]);
+
+  const mimeType = firstNonEmptyString(raw, [
+    "mimeType",
+    "mime_type",
+    "contentType",
+    "content_type",
+    "message.mimeType",
+    "message.mime_type",
+    "message.media.mimeType",
+    "message.media.mime_type",
+    "media.mimeType",
+    "media.mime_type",
+    "attachment.mimeType",
+    "attachment.mime_type",
+    "attachments.0.mimeType",
+    "attachments.0.mime_type",
+  ]);
+
+  const genericMediaUrl = firstNonEmptyString(raw, [
+    "mediaUrl",
+    "media_url",
+    "url",
+    "link",
+    "message.mediaUrl",
+    "message.media_url",
+    "message.url",
+    "message.link",
+    "message.media.url",
+    "message.media.link",
+    "media.url",
+    "media.link",
+    "attachment.url",
+    "attachment.link",
+    "attachments.0.url",
+    "attachments.0.link",
+  ]);
+
+  const explicitType = normalizeAgentMediaType(firstNonEmptyString(raw, [
+    "type",
+    "kind",
+    "messageType",
+    "mediaType",
+    "message.type",
+    "message.kind",
+    "message.messageType",
+    "message.mediaType",
+    "message.media.type",
+    "media.type",
+    "attachment.type",
+    "attachments.0.type",
+  ]), mimeType, filename, genericMediaUrl);
+
+  const imageUrl = firstNonEmptyString(raw, ["imageUrl", "image_url", "message.imageUrl", "message.image_url"]) || (explicitType === "image" ? genericMediaUrl : "");
+  const videoUrl = firstNonEmptyString(raw, ["videoUrl", "video_url", "message.videoUrl", "message.video_url"]) || (explicitType === "video" ? genericMediaUrl : "");
+  const audioUrl = firstNonEmptyString(raw, ["audioUrl", "audio_url", "voiceUrl", "voice_url", "message.audioUrl", "message.voiceUrl"]) || (explicitType === "audio" ? genericMediaUrl : "");
+  const documentUrl = firstNonEmptyString(raw, ["documentUrl", "document_url", "fileUrl", "file_url", "message.documentUrl", "message.fileUrl"]) || (explicitType === "document" ? genericMediaUrl : "");
+  const mediaId = firstNonEmptyString(raw, ["mediaId", "media_id", "message.mediaId", "message.media_id", "message.media.id", "media.id", "attachment.mediaId", "attachments.0.mediaId"]);
+  const text = firstNonEmptyString(raw, ["text", "body", "messageText", "message.text", "message.body"]);
+  const caption = firstNonEmptyString(raw, ["caption", "mediaCaption", "message.caption", "message.media.caption", "media.caption", "attachment.caption", "attachments.0.caption"]);
+
+  const latitude = firstDefinedValue(raw, ["latitude", "lat", "location.latitude", "location.lat", "message.location.latitude", "message.location.lat", "geo.latitude", "geo.lat", "coordinates.latitude", "coordinates.lat"]);
+  const longitude = firstDefinedValue(raw, ["longitude", "lng", "lon", "location.longitude", "location.lng", "location.lon", "message.location.longitude", "message.location.lng", "geo.longitude", "geo.lng", "coordinates.longitude", "coordinates.lng"]);
+  const locationName = firstNonEmptyString(raw, ["location.name", "message.location.name", "geo.name"]);
+  const locationAddress = firstNonEmptyString(raw, ["location.address", "message.location.address", "geo.address"]);
+
+  let inferredType = explicitType;
+  if (!inferredType) {
+    if (latitude !== undefined && longitude !== undefined) inferredType = "location";
+    else if (imageUrl) inferredType = "image";
+    else if (videoUrl) inferredType = "video";
+    else if (audioUrl) inferredType = "audio";
+    else if (documentUrl) inferredType = "document";
+    else if (genericMediaUrl || mediaId) inferredType = normalizeAgentMediaType("", mimeType, filename, genericMediaUrl || filename) || "document";
+    else if (text) inferredType = "text";
+  }
+
+  return {
+    waTo,
+    text,
+    caption,
+    filename,
+    mimeType,
+    mediaId,
+    imageUrl,
+    videoUrl,
+    audioUrl,
+    documentUrl,
+    mediaUrl: genericMediaUrl,
+    type: inferredType,
+    location: {
+      latitude,
+      longitude,
+      name: locationName,
+      address: locationAddress,
+    },
+  };
+}
+
+async function sendAgentMediaFromUrl(to, type, sourceUrl, { caption = "", filename = "", mimeType = "" } = {}, reportSource = "AGENT") {
+  if (!sourceUrl) throw new Error("sourceUrl is required");
+
+  try {
+    const downloaded = await downloadRemoteOrDataMedia(sourceUrl, mimeType, filename || guessFilenameFromUrl(sourceUrl, type || "file", mimeType));
+    const prepared = await ensureSupportedAgentMedia({
+      type,
+      buffer: downloaded.buffer,
+      mimeType: downloaded.mimeType,
+      filename: filename || downloaded.filename,
+    });
+    const mediaId = await uploadMetaMediaBuffer(prepared);
+    await sendWhatsAppMediaById(to, type, mediaId, { caption, filename: prepared.filename }, reportSource);
+    return { ok: true, via: "upload", mediaId };
+  } catch (e) {
+    console.error(`Agent media upload fallback to direct link (${type}):`, e?.response?.data || e?.message || e);
+  }
+
+  if (type === "image") {
+    await sendWhatsAppImage(to, sourceUrl, caption, reportSource);
+    return { ok: true, via: "direct_link" };
+  }
+  if (type === "video") {
+    await sendWhatsAppVideo(to, sourceUrl, caption, reportSource);
+    return { ok: true, via: "direct_link" };
+  }
+  if (type === "audio") {
+    await sendWhatsAppAudio(to, sourceUrl, reportSource);
+    return { ok: true, via: "direct_link" };
+  }
+  if (type === "document") {
+    await sendWhatsAppDocument(to, sourceUrl, filename || undefined, caption, reportSource);
+    return { ok: true, via: "direct_link" };
+  }
+
+  throw new Error(`Unsupported type for sendAgentMediaFromUrl: ${type}`);
+}
+
 function sanitizeFileName(name, fallback = "file") {
   const raw = String(name || fallback).trim() || fallback;
   return raw.replace(/[\\/:*?"<>|]+/g, "_");
@@ -813,19 +1294,15 @@ function verifyHubMediaToken(mediaId, ts, sig) {
   return timingSafeEqualHex(sig, expected);
 }
 
-function buildSignedHubMediaUrl(baseUrl, mediaId) {
+function buildHubMediaUrl(req, mediaId) {
   if (!mediaId || !HUB_MEDIA_SECRET) return "";
-  const base = String(baseUrl || "").trim();
+  const base = getBotPublicBaseUrl(req);
   if (!base) return "";
 
   const ts = String(Date.now());
   const sig = signHubMediaToken(mediaId, ts);
 
   return `${base.replace(/\/$/, "")}/hub_media/${encodeURIComponent(mediaId)}?ts=${encodeURIComponent(ts)}&sig=${encodeURIComponent(sig)}`;
-}
-
-function buildHubMediaUrl(req, mediaId) {
-  return buildSignedHubMediaUrl(getBotPublicBaseUrl(req), mediaId);
 }
 
 function attachHubMediaUrl(req, meta) {
@@ -838,69 +1315,6 @@ function attachHubMediaUrl(req, meta) {
   }
 
   return out;
-}
-
-function getFileNameFromUrl(rawUrl, fallback = "file") {
-  try {
-    const u = new URL(String(rawUrl || ""));
-    const candidate = decodeURIComponent((u.pathname || "").split("/").pop() || "").trim();
-    if (candidate) return sanitizeFileName(candidate, fallback);
-  } catch {}
-  return sanitizeFileName(fallback, fallback);
-}
-
-function guessMimeTypeFromUrl(rawUrl, fallback = "") {
-  const lower = String(rawUrl || "").toLowerCase();
-  if (lower.includes('.jpg') || lower.includes('.jpeg')) return 'image/jpeg';
-  if (lower.includes('.png')) return 'image/png';
-  if (lower.includes('.gif')) return 'image/gif';
-  if (lower.includes('.webp')) return 'image/webp';
-  if (lower.includes('.mp4')) return 'video/mp4';
-  if (lower.includes('.mp3')) return 'audio/mpeg';
-  if (lower.includes('.ogg')) return 'audio/ogg';
-  if (lower.includes('.pdf')) return 'application/pdf';
-  return fallback;
-}
-
-async function uploadMetaMediaFromUrl(mediaUrl, fallbackMimeType = '', fallbackFilename = 'file') {
-  if (!mediaUrl) throw new Error('mediaUrl is required');
-  if (!WA_TOKEN) throw new Error('WA_TOKEN not configured');
-
-  const downloaded = await axios.get(mediaUrl, {
-    responseType: 'arraybuffer',
-    timeout: 60000,
-    maxContentLength: 25 * 1024 * 1024,
-    maxBodyLength: 25 * 1024 * 1024,
-  });
-
-  const detectedMime = String(downloaded?.headers?.['content-type'] || '').trim();
-  const mimeType = detectedMime || fallbackMimeType || guessMimeTypeFromUrl(mediaUrl, 'application/octet-stream');
-  const filename = getFileNameFromUrl(mediaUrl, fallbackFilename || `file${extFromMimeType(mimeType) || ''}`);
-
-  const form = new FormData();
-  const blob = new Blob([downloaded.data], { type: mimeType });
-  form.append('messaging_product', 'whatsapp');
-  form.append('type', mimeType);
-  form.append('file', blob, filename);
-
-  const res = await fetch(`https://graph.facebook.com/${META_GRAPH_VERSION}/${encodeURIComponent(PHONE_NUMBER_ID)}/media`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${WA_TOKEN}`,
-    },
-    body: form,
-  });
-
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok || !json?.id) {
-    throw new Error(typeof json?.error?.message === 'string' ? json.error.message : `Meta media upload failed (${res.status})`);
-  }
-
-  return {
-    mediaId: String(json.id),
-    mimeType,
-    filename,
-  };
 }
 
 async function getMetaMediaInfo(mediaId) {
@@ -2700,27 +3114,6 @@ async function sendWhatsAppDocument(to, documentUrl, filename, caption = "", rep
 async function sendWhatsAppImage(to, imageUrl, caption = "", reportSource = "BOT") {
   if (!imageUrl) throw new Error("imageUrl is required");
 
-  let uploadedMedia = null;
-  try {
-    uploadedMedia = await uploadMetaMediaFromUrl(
-      imageUrl,
-      guessMimeTypeFromUrl(imageUrl, "image/jpeg"),
-      "bot-image.jpg"
-    );
-  } catch (e) {
-    console.error("Meta image upload fallback to direct link:", e?.response?.data || e?.message || e);
-  }
-
-  const imagePayload = uploadedMedia?.mediaId
-    ? {
-        id: uploadedMedia.mediaId,
-        caption: caption || undefined,
-      }
-    : {
-        link: imageUrl,
-        caption: caption || undefined,
-      };
-
   const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
   await axios.post(
     url,
@@ -2728,14 +3121,13 @@ async function sendWhatsAppImage(to, imageUrl, caption = "", reportSource = "BOT
       messaging_product: "whatsapp",
       to,
       type: "image",
-      image: imagePayload,
+      image: {
+        link: imageUrl,
+        caption: caption || undefined,
+      },
     },
     { headers: { Authorization: `Bearer ${WA_TOKEN}` } }
   );
-
-  const hubMediaUrl = uploadedMedia?.mediaId
-    ? buildSignedHubMediaUrl(BOT_PUBLIC_BASE_URL, uploadedMedia.mediaId)
-    : "";
 
   await bothubReportMessage({
     direction: "OUTBOUND",
@@ -2743,15 +3135,8 @@ async function sendWhatsAppImage(to, imageUrl, caption = "", reportSource = "BOT
     body: caption || "Imagen enviada",
     source: reportSource,
     kind: "IMAGE",
-    mediaUrl: hubMediaUrl || imageUrl,
-    meta: {
-      link: imageUrl,
-      imageUrl,
-      mediaUrl: hubMediaUrl || imageUrl,
-      mediaId: uploadedMedia?.mediaId,
-      mimeType: uploadedMedia?.mimeType || guessMimeTypeFromUrl(imageUrl, "image/jpeg"),
-      caption: caption || undefined,
-    },
+    mediaUrl: imageUrl,
+    meta: { link: imageUrl },
   });
 }
 
@@ -3746,30 +4131,20 @@ app.post("/agent_message", async (req, res) => {
       return res.status(401).json({ error: "Invalid signature" });
     }
 
-    const body = req.body || {};
-    const waTo = String(body.waTo || "").trim();
-    const text = String(body.text || body.body || "").trim();
-    const explicitType = String(body.type || "").trim().toLowerCase();
-    const imageUrl = String(body.imageUrl || body.image_url || body.mediaUrl || body.media_url || "").trim();
-    const videoUrl = String(body.videoUrl || body.video_url || "").trim();
-    const audioUrl = String(body.audioUrl || body.audio_url || body.voiceUrl || body.voice_url || "").trim();
-    const documentUrl = String(body.documentUrl || body.document_url || body.fileUrl || body.file_url || "").trim();
-    const caption = String(body.caption || body.mediaCaption || "").trim();
-    const filename = String(body.filename || body.fileName || "").trim();
+    const payload = extractAgentMessagePayload(req.body || {});
+    const waTo = String(payload.waTo || "").trim();
+    const text = String(payload.text || "").trim();
+    const caption = String(payload.caption || "").trim();
+    const filename = String(payload.filename || "").trim();
+    const mimeType = String(payload.mimeType || "").trim();
+    const mediaId = String(payload.mediaId || "").trim();
+    const inferredType = normalizeAgentMediaType(payload.type, mimeType, filename, payload.mediaUrl || "");
 
     if (!waTo) return res.status(400).json({ error: "waTo is required" });
 
-    const inferredType = explicitType || (
-      imageUrl ? "image" :
-      videoUrl ? "video" :
-      audioUrl ? "audio" :
-      documentUrl ? "document" :
-      text ? "text" : ""
-    );
-
     if (!inferredType) {
       return res.status(400).json({
-        error: "One of text, imageUrl/mediaUrl, videoUrl, audioUrl or documentUrl is required",
+        error: "One of text, image/video/audio/document payload or location is required",
       });
     }
 
@@ -3779,31 +4154,40 @@ app.post("/agent_message", async (req, res) => {
       return res.json({ ok: true, sentType: "text" });
     }
 
-    if (inferredType === "image") {
-      if (!imageUrl) return res.status(400).json({ error: "imageUrl/mediaUrl is required" });
-      await sendWhatsAppImage(waTo, imageUrl, caption || text, "AGENT");
-      return res.json({ ok: true, sentType: "image" });
+    if (inferredType === "location") {
+      await sendWhatsAppLocation(waTo, payload.location || {}, "AGENT");
+      return res.json({ ok: true, sentType: "location" });
     }
 
-    if (inferredType === "video") {
-      if (!videoUrl) return res.status(400).json({ error: "videoUrl is required" });
-      await sendWhatsAppVideo(waTo, videoUrl, caption || text, "AGENT");
-      return res.json({ ok: true, sentType: "video" });
+    if (mediaId) {
+      await sendWhatsAppMediaById(waTo, inferredType, mediaId, { caption: caption || text, filename }, "AGENT");
+      return res.json({ ok: true, sentType: inferredType, via: "media_id" });
     }
 
-    if (inferredType === "audio") {
-      if (!audioUrl) return res.status(400).json({ error: "audioUrl/voiceUrl is required" });
-      await sendWhatsAppAudio(waTo, audioUrl, "AGENT");
-      return res.json({ ok: true, sentType: "audio" });
+    const mediaUrl =
+      inferredType === "image"
+        ? payload.imageUrl
+        : inferredType === "video"
+          ? payload.videoUrl
+          : inferredType === "audio"
+            ? payload.audioUrl
+            : inferredType === "document"
+              ? payload.documentUrl
+              : payload.mediaUrl;
+
+    if (!mediaUrl) {
+      return res.status(400).json({ error: `${inferredType} media source is required` });
     }
 
-    if (inferredType === "document") {
-      if (!documentUrl) return res.status(400).json({ error: "documentUrl/fileUrl is required" });
-      await sendWhatsAppDocument(waTo, documentUrl, filename || undefined, caption || text, "AGENT");
-      return res.json({ ok: true, sentType: "document" });
-    }
+    await sendAgentMediaFromUrl(
+      waTo,
+      inferredType,
+      mediaUrl,
+      { caption: caption || text, filename, mimeType },
+      "AGENT"
+    );
 
-    return res.status(400).json({ error: "Unsupported type" });
+    return res.json({ ok: true, sentType: inferredType });
   } catch (e) {
     console.error("agent_message error:", e?.response?.data || e?.message || e);
     return res.status(500).json({ error: "Internal error" });
