@@ -813,15 +813,19 @@ function verifyHubMediaToken(mediaId, ts, sig) {
   return timingSafeEqualHex(sig, expected);
 }
 
-function buildHubMediaUrl(req, mediaId) {
+function buildSignedHubMediaUrl(baseUrl, mediaId) {
   if (!mediaId || !HUB_MEDIA_SECRET) return "";
-  const base = getBotPublicBaseUrl(req);
+  const base = String(baseUrl || "").trim();
   if (!base) return "";
 
   const ts = String(Date.now());
   const sig = signHubMediaToken(mediaId, ts);
 
   return `${base.replace(/\/$/, "")}/hub_media/${encodeURIComponent(mediaId)}?ts=${encodeURIComponent(ts)}&sig=${encodeURIComponent(sig)}`;
+}
+
+function buildHubMediaUrl(req, mediaId) {
+  return buildSignedHubMediaUrl(getBotPublicBaseUrl(req), mediaId);
 }
 
 function attachHubMediaUrl(req, meta) {
@@ -834,6 +838,69 @@ function attachHubMediaUrl(req, meta) {
   }
 
   return out;
+}
+
+function getFileNameFromUrl(rawUrl, fallback = "file") {
+  try {
+    const u = new URL(String(rawUrl || ""));
+    const candidate = decodeURIComponent((u.pathname || "").split("/").pop() || "").trim();
+    if (candidate) return sanitizeFileName(candidate, fallback);
+  } catch {}
+  return sanitizeFileName(fallback, fallback);
+}
+
+function guessMimeTypeFromUrl(rawUrl, fallback = "") {
+  const lower = String(rawUrl || "").toLowerCase();
+  if (lower.includes('.jpg') || lower.includes('.jpeg')) return 'image/jpeg';
+  if (lower.includes('.png')) return 'image/png';
+  if (lower.includes('.gif')) return 'image/gif';
+  if (lower.includes('.webp')) return 'image/webp';
+  if (lower.includes('.mp4')) return 'video/mp4';
+  if (lower.includes('.mp3')) return 'audio/mpeg';
+  if (lower.includes('.ogg')) return 'audio/ogg';
+  if (lower.includes('.pdf')) return 'application/pdf';
+  return fallback;
+}
+
+async function uploadMetaMediaFromUrl(mediaUrl, fallbackMimeType = '', fallbackFilename = 'file') {
+  if (!mediaUrl) throw new Error('mediaUrl is required');
+  if (!WA_TOKEN) throw new Error('WA_TOKEN not configured');
+
+  const downloaded = await axios.get(mediaUrl, {
+    responseType: 'arraybuffer',
+    timeout: 60000,
+    maxContentLength: 25 * 1024 * 1024,
+    maxBodyLength: 25 * 1024 * 1024,
+  });
+
+  const detectedMime = String(downloaded?.headers?.['content-type'] || '').trim();
+  const mimeType = detectedMime || fallbackMimeType || guessMimeTypeFromUrl(mediaUrl, 'application/octet-stream');
+  const filename = getFileNameFromUrl(mediaUrl, fallbackFilename || `file${extFromMimeType(mimeType) || ''}`);
+
+  const form = new FormData();
+  const blob = new Blob([downloaded.data], { type: mimeType });
+  form.append('messaging_product', 'whatsapp');
+  form.append('type', mimeType);
+  form.append('file', blob, filename);
+
+  const res = await fetch(`https://graph.facebook.com/${META_GRAPH_VERSION}/${encodeURIComponent(PHONE_NUMBER_ID)}/media`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${WA_TOKEN}`,
+    },
+    body: form,
+  });
+
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json?.id) {
+    throw new Error(typeof json?.error?.message === 'string' ? json.error.message : `Meta media upload failed (${res.status})`);
+  }
+
+  return {
+    mediaId: String(json.id),
+    mimeType,
+    filename,
+  };
 }
 
 async function getMetaMediaInfo(mediaId) {
@@ -2633,6 +2700,27 @@ async function sendWhatsAppDocument(to, documentUrl, filename, caption = "", rep
 async function sendWhatsAppImage(to, imageUrl, caption = "", reportSource = "BOT") {
   if (!imageUrl) throw new Error("imageUrl is required");
 
+  let uploadedMedia = null;
+  try {
+    uploadedMedia = await uploadMetaMediaFromUrl(
+      imageUrl,
+      guessMimeTypeFromUrl(imageUrl, "image/jpeg"),
+      "bot-image.jpg"
+    );
+  } catch (e) {
+    console.error("Meta image upload fallback to direct link:", e?.response?.data || e?.message || e);
+  }
+
+  const imagePayload = uploadedMedia?.mediaId
+    ? {
+        id: uploadedMedia.mediaId,
+        caption: caption || undefined,
+      }
+    : {
+        link: imageUrl,
+        caption: caption || undefined,
+      };
+
   const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
   await axios.post(
     url,
@@ -2640,13 +2728,14 @@ async function sendWhatsAppImage(to, imageUrl, caption = "", reportSource = "BOT
       messaging_product: "whatsapp",
       to,
       type: "image",
-      image: {
-        link: imageUrl,
-        caption: caption || undefined,
-      },
+      image: imagePayload,
     },
     { headers: { Authorization: `Bearer ${WA_TOKEN}` } }
   );
+
+  const hubMediaUrl = uploadedMedia?.mediaId
+    ? buildSignedHubMediaUrl(BOT_PUBLIC_BASE_URL, uploadedMedia.mediaId)
+    : "";
 
   await bothubReportMessage({
     direction: "OUTBOUND",
@@ -2654,8 +2743,15 @@ async function sendWhatsAppImage(to, imageUrl, caption = "", reportSource = "BOT
     body: caption || "Imagen enviada",
     source: reportSource,
     kind: "IMAGE",
-    mediaUrl: imageUrl,
-    meta: { link: imageUrl },
+    mediaUrl: hubMediaUrl || imageUrl,
+    meta: {
+      link: imageUrl,
+      imageUrl,
+      mediaUrl: hubMediaUrl || imageUrl,
+      mediaId: uploadedMedia?.mediaId,
+      mimeType: uploadedMedia?.mimeType || guessMimeTypeFromUrl(imageUrl, "image/jpeg"),
+      caption: caption || undefined,
+    },
   });
 }
 
