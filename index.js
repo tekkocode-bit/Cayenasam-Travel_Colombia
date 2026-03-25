@@ -3273,7 +3273,9 @@ function buildPackageInfoText(pkg) {
 
 async function sendPackagePresentation(to, pkg) {
   if (!pkg) return;
-  if (pkg.imageUrl) await sendWhatsAppImage(to, pkg.imageUrl);
+  if (pkg.imageUrl) {
+    await sendAgentMediaFromUrl(to, "image", pkg.imageUrl, {}, "BOT");
+  }
   await sendWhatsAppText(to, buildPackageInfoText(pkg));
 }
 
@@ -3364,7 +3366,7 @@ async function sendRealToursByGroup(to, groupKey, session) {
 async function sendRealTourPresentation(to, tour) {
   if (!tour) return;
   if (tour.imageUrl) {
-    await sendWhatsAppImage(to, tour.imageUrl);
+    await sendAgentMediaFromUrl(to, "image", tour.imageUrl, {}, "BOT");
   }
   await sendWhatsAppText(to, buildRealTourInfoText(tour));
 }
