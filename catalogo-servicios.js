@@ -36,17 +36,6 @@ export const PACKAGE_DESTINATIONS = [
     noteText: "Menores de 2 a 11 años: validar tarifa vigente con la agencia al momento de reservar.",
   },
   {
-    key: "eje_cafetero_experiencias",
-    id: "pkg_eje_cafetero_experiencias",
-    title: "Eje Cafetero Experiencias",
-    imageUrl: "https://res.cloudinary.com/daqqrtg0b/image/upload/v1773984220/WhatsApp_Image_2026-03-19_at_8.49.42_PM_4_td5isy.jpg",
-    priceText: "Múltiple desde COP 725.000 / doble desde COP 785.000 según fecha.",
-    durationText: "Plan de 4 días.",
-    dateText: "Fechas programadas según calendario compartido por la agencia.",
-    includesText: "Ingreso al Parque del Café, Panaca, Salento y Valle del Cocora, termales de Santa Rosa de Cabal, Filandia, tour panorámico, traslados, alojamiento, alimentación y tarjeta de asistencia médica.",
-    noteText: "Algunas experiencias pueden cambiar Panaca por opciones adicionales con cargo extra. Validar disponibilidad y versión del plan.",
-  },
-  {
     key: "punta_cana_imperdible",
     id: "pkg_punta_cana_imperdible",
     title: "Punta Cana Imperdible",
