@@ -1038,6 +1038,9 @@ async function sendWhatsAppMediaById(to, type, mediaId, { caption = "", filename
   const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
   await axios.post(url, payload, { headers: { Authorization: `Bearer ${WA_TOKEN}` } });
 
+  const safeMediaId = String(mediaId);
+  const hubMediaUrl = buildHubMediaUrlStatic(safeMediaId);
+
   await bothubReportMessage({
     direction: "OUTBOUND",
     to: String(to),
@@ -1052,8 +1055,11 @@ async function sendWhatsAppMediaById(to, type, mediaId, { caption = "", filename
             : filename || "Documento enviado"),
     source: reportSource,
     kind: normalizedType.toUpperCase(),
-    mediaId: String(mediaId),
+    mediaId: safeMediaId,
+    mediaUrl: hubMediaUrl || undefined,
     meta: {
+      mediaId: safeMediaId,
+      mediaUrl: hubMediaUrl || undefined,
       filename: filename || undefined,
       caption: caption || undefined,
     },
@@ -1259,20 +1265,29 @@ function sanitizeFileName(name, fallback = "file") {
   return raw.replace(/[\\/:*?"<>|]+/g, "_");
 }
 
+function getStaticPublicBaseUrl() {
+  return (
+    BOT_PUBLIC_BASE_URL ||
+    String(process.env.RENDER_EXTERNAL_URL || "").trim().replace(/\/$/, "") ||
+    String(process.env.RENDER_PUBLIC_URL || "").trim().replace(/\/$/, "") ||
+    ""
+  );
+}
+
 function getRequestBaseUrl(req) {
-  const proto = String(req.headers["x-forwarded-proto"] || req.protocol || "https")
+  const proto = String(req?.headers?.["x-forwarded-proto"] || req?.protocol || "https")
     .split(",")[0]
     .trim();
-  const host = String(req.headers["x-forwarded-host"] || req.get("host") || "")
+  const host = String(req?.headers?.["x-forwarded-host"] || req?.get?.("host") || "")
     .split(",")[0]
     .trim();
 
-  if (!host) return BOT_PUBLIC_BASE_URL || "";
+  if (!host) return getStaticPublicBaseUrl();
   return `${proto}://${host}`;
 }
 
 function getBotPublicBaseUrl(req) {
-  return BOT_PUBLIC_BASE_URL || getRequestBaseUrl(req);
+  return getStaticPublicBaseUrl() || getRequestBaseUrl(req);
 }
 
 function signHubMediaToken(mediaId, ts) {
@@ -1294,15 +1309,23 @@ function verifyHubMediaToken(mediaId, ts, sig) {
   return timingSafeEqualHex(sig, expected);
 }
 
-function buildHubMediaUrl(req, mediaId) {
+function buildHubMediaUrlFromBase(base, mediaId) {
   if (!mediaId || !HUB_MEDIA_SECRET) return "";
-  const base = getBotPublicBaseUrl(req);
-  if (!base) return "";
+  const safeBase = String(base || "").trim().replace(/\/$/, "");
+  if (!safeBase) return "";
 
   const ts = String(Date.now());
   const sig = signHubMediaToken(mediaId, ts);
 
-  return `${base.replace(/\/$/, "")}/hub_media/${encodeURIComponent(mediaId)}?ts=${encodeURIComponent(ts)}&sig=${encodeURIComponent(sig)}`;
+  return `${safeBase}/hub_media/${encodeURIComponent(mediaId)}?ts=${encodeURIComponent(ts)}&sig=${encodeURIComponent(sig)}`;
+}
+
+function buildHubMediaUrl(req, mediaId) {
+  return buildHubMediaUrlFromBase(getBotPublicBaseUrl(req), mediaId);
+}
+
+function buildHubMediaUrlStatic(mediaId) {
+  return buildHubMediaUrlFromBase(getStaticPublicBaseUrl(), mediaId);
 }
 
 function attachHubMediaUrl(req, meta) {
@@ -3107,7 +3130,7 @@ async function sendWhatsAppDocument(to, documentUrl, filename, caption = "", rep
     source: reportSource,
     kind: "DOCUMENT",
     mediaUrl: documentUrl,
-    meta: { filename: filename || undefined, link: documentUrl },
+    meta: { filename: filename || undefined, link: documentUrl, mediaUrl: documentUrl },
   });
 }
 
@@ -3136,7 +3159,7 @@ async function sendWhatsAppImage(to, imageUrl, caption = "", reportSource = "BOT
     source: reportSource,
     kind: "IMAGE",
     mediaUrl: imageUrl,
-    meta: { link: imageUrl },
+    meta: { link: imageUrl, mediaUrl: imageUrl },
   });
 }
 
@@ -3165,7 +3188,7 @@ async function sendWhatsAppVideo(to, videoUrl, caption = "", reportSource = "BOT
     source: reportSource,
     kind: "VIDEO",
     mediaUrl: videoUrl,
-    meta: { link: videoUrl },
+    meta: { link: videoUrl, mediaUrl: videoUrl },
   });
 }
 
@@ -3193,7 +3216,7 @@ async function sendWhatsAppAudio(to, audioUrl, reportSource = "BOT") {
     source: reportSource,
     kind: "AUDIO",
     mediaUrl: audioUrl,
-    meta: { link: audioUrl },
+    meta: { link: audioUrl, mediaUrl: audioUrl },
   });
 }
 
