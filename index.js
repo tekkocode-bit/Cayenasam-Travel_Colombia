@@ -2191,6 +2191,26 @@ function clearLeadOnBooking(session) {
   };
 }
 
+function hasCompletedLead(session) {
+  return !!(
+    session &&
+    session.state === "idle" &&
+    !session.pendingServiceLine &&
+    session.lead &&
+    session.lead.converted === true
+  );
+}
+
+function clearCompletedLeadLock(session) {
+  session.lead = defaultLead();
+}
+
+function buildCompletedLeadWaitText() {
+  return `✅ Tu solicitud ya fue registrada.
+
+Un asesor de ${BUSINESS_NAME} te estará respondiendo por esta misma vía lo antes posible. Por favor, espera su atención para evitar duplicar la solicitud.`;
+}
+
 function isValidEmail(text) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(text || "").trim());
 }
@@ -2570,7 +2590,7 @@ function getDigitsOnly(text) {
 
 async function finalizeSimpleLead({ session, flow, from, phoneDigits }) {
   const summaryText = buildLeadSummary(flow.summaryTitle, flow.buildSummaryFields(session, phoneDigits));
-  updateLead(session, { tour_key: "", quotePreview: summaryText, converted: false, followupSent: false });
+  updateLead(session, { tour_key: "", quotePreview: summaryText, converted: true, followupSent: true });
   await handoffToHumanTool({ summary: summaryText });
   await notifyPersonalWhatsAppLeadSummary(summaryText, phoneDigits);
   await sendWhatsAppText(from, flow.buildConfirmationText(session));
@@ -3321,7 +3341,7 @@ function buildPackageLeadSummary(session, phoneDigits) {
 async function finalizePackageLead({ session, from }) {
   const contactPhone = String(from || "").replace(/[^\d]/g, "");
   const summaryText = buildPackageLeadSummary(session, contactPhone);
-  updateLead(session, { tour_key: "", quotePreview: summaryText, converted: false, followupSent: false });
+  updateLead(session, { tour_key: "", quotePreview: summaryText, converted: true, followupSent: true });
   await handoffToHumanTool({ summary: summaryText });
   await notifyPersonalWhatsAppLeadSummary(summaryText, contactPhone);
   const pkg = getPackageDestinationByKey(session.pendingDestination);
@@ -4441,11 +4461,17 @@ app.post("/webhook", async (req, res) => {
       ["menu", "menú", "inicio", "reiniciar", "reset", "resetear", "empezar de nuevo"].includes(tNorm)
     ) {
       clearIntakeFlow(session);
+      clearCompletedLeadLock(session);
       session.lastBooking = null;
       session.reschedule = defaultSession().reschedule;
       armMenuInactivityReminder(session);
       await sendWhatsAppText(from, mainMenuText());
       await sendServiceLinesList(from);
+      return res.sendStatus(200);
+    }
+
+    if (hasCompletedLead(session)) {
+      await sendWhatsAppText(from, buildCompletedLeadWaitText());
       return res.sendStatus(200);
     }
 
